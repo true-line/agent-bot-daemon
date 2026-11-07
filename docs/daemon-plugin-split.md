@@ -240,11 +240,12 @@ access-controlled. Remote owner administration uses a tunnel the owner opens
 
 | Repo | Owns | Ships |
 | --- | --- | --- |
-| **agent-bot-daemon** (HQ) | `hq/v1` control API and owner session authentication; the authoritative store; enforcement-profile detection and honest reporting (R8); member launch under protected principals; the identity-service link; the plugin host; the `agent-bot` CLI (owner commands); the member-facing surfaces (`agent-bot mcp`, `reach-mcp`, hook runner) as thin clients of HQ; readiness and doctor; install and update; the org resolver; `@agent-bot/sdk`; the WP1 contract schemas and fixtures | The HQ release: the pinned plugin set plus launchers for macOS, Windows and Linux |
+| **agent-bot-daemon** (HQ) | `hq/v1` control API and owner session authentication; the authoritative store; enforcement-profile detection and honest reporting (R8); member launch under protected principals; the identity-service link; the plugin host; the `agent-bot` CLI (owner commands); the member-facing surfaces (`agent-bot mcp`, `reach-mcp`, hook runner) as thin clients of HQ; readiness and doctor; install and update; the org resolver; `@agent-bot/sdk`. It pins a `true-line/soul-contracts` release and loads its fixtures, keeping no local copies (D5) | The HQ release: the pinned plugin set plus launchers for macOS, Windows and Linux |
 | **agent-bot-identity** | Device enrollment with the identity service; the HQ signer (keyd → `agent-bot-signer`; host-side key custody moves to agent-bot-machine per D4); credential references and their resolution into short-lived tokens held by HQ; grants and caller-bound grant handles; HQ approval records; Soul ID, member, runtime and installation identity; receipts and attribution (0.4's [S5] scope); the cooperative-profile member tools (gh shim, credential helper, git hooks) | Plugin package plus the signer binary |
 | **agent-bot-comms** | Broker mode (in HQ): mailbox, durable inbox and outbox, directives and queries as message kinds, the task service, dedup in HQ's store, budgets and sub-allocations, brokered inference and service egress, receipts. Client mode (in the Soul): the CLI and early validation. Relay mode: site and cloud relays. Also the identity-service notices feed, the A2A edge gateway, and channel adapters (Telegram). | Plugin package, the `agent-comms` CLI, and the relay build |
 | **agent-bot-soul-runtime** | Package format (0.4 §11), validator, manifest digests, `soul build` render per adapter, adapter manifests, transfer, fork and template export, dream admission and candidate workflow (HQ side); the entry point: front door, member supervision, role routing, handoff notes, recovery ladder (Soul side); the pure core both use; conformance fixtures | `core/`, `hq/` (plugin), `entry-point/` (pinned with each Soul, per 0.4 §3) |
 | **agent-bot-machine** (today `qwts/managed-machine`) | The privileged executor and installer in the `admin` account (no root): signed-request verbs from agent-daemon only, receipts, catalog verification; host-side credential and policy custody, and verification of the owner's Secure Enclave presence signature for privileged requests (D4) | The executor binary, a plugin piece agent-daemon can host, and a lightweight shim for hosts without the rest of the runtime; Developer ID-signed keyd custody and presence-helper builds |
+| **soul-contracts** (`true-line/soul-contracts`, WP1) | The contract baseline every implementation pins: JSON Schemas for 0.4 Appendix A (`hq/v1`, `wire/v1`, `task/v1`, `records/v1`), positive, negative and JCS fixtures, the error registry, the glossary, R1–R12 and T01–T30 traceability, and the papers. No runtime code. No implementer edits it to make its own code pass (D5) | Versioned releases pinned by digest |
 
 ### 3.2 Trust domains, per plugin
 
@@ -460,7 +461,7 @@ which checks:
 - unique names;
 - an `auth` class on every `hq/v1` operation.
 
-The 0.4 WP1 fixtures (positive and negative) run against the real plugins.
+The 0.4 WP1 fixtures (positive and negative), loaded from the pinned `soul-contracts` release, run against the real plugins.
 
 ### 4.7 Identity-service link hardening
 
@@ -561,6 +562,8 @@ R2.
     custody lets the lease expire and the notice return.
   - Delivery is at least once, with one committed transition per message
     ID (T05).
+  - There is no relay-pushed "notices waiting" hint (Q7). Pull latency
+    and volume are measured first.
 - **Outages.** If the relay is down, local conversations, tasks and
   permitted operations continue and outbound messages queue (R9, T13). If
   the identity service is down, notices wait in its queue (kept 7 days).
@@ -599,8 +602,9 @@ harness's native file. Because it is a primitive, the rules of 0.4 §10
 apply. Only owner acceptance changes it: a dream run can only propose a
 candidate. It can't be marked optional for an adapter. The current
 `AGENTS.md` becomes `primitives/standing-instructions/`, and the existing
-skills become `primitives/<name>/`. Whether to keep the file name `SOUL.md`
-is open question Q3.
+skills become `primitives/<name>/`. The file name stays `SOUL.md` (Q3);
+SoulInfo.json and SoulLock.json remain the only configuration authorities,
+and the persona is rendered by `soul build` and pinned by digest.
 
 ### 5.3 Digests and manifest
 
@@ -703,7 +707,7 @@ Source modules: Appendix A, `soul-runtime/core`, `/hq` and `/entry-point`.
 | macOS, Linux | `hq/v1` over a Unix domain socket in HQ's state directory | The owner, i.e. the host account that installed HQ (0.4 §4), checked by peer credentials |
 | Windows | Named pipe with a DACL for the owner SID | Owner SID |
 | Remote / headless | The owner forwards the control socket over SSH (MVP); OAuth or Kerberos authenticators later | Owner, through the tunnel. **Never through a relay** (R2). |
-| Browser PWA (optional) | Today's `agent-web` on `127.0.0.1`, with a pairing code from the owner CLI and an HttpOnly cookie | Owner session. It is the only TCP listener, loopback only, and off unless `agent-bot web open` is run. |
+| Browser PWA (optional, read-only for the pilot, Q6) | Today's `agent-web` on `127.0.0.1`, with a pairing code from the owner CLI and an HttpOnly cookie | Owner session. It is the only TCP listener, loopback only, and off unless `agent-bot web open` is run. Status, receipts and task inspection only, enforced at the API boundary; no approvals, policy, grant, lifecycle, task-submission or credential operations. Meets WCAG 2.2 AA. |
 | Mobile | Post-MVP, and only through an owner-opened tunnel | Owner |
 
 GeniusBar and the HQ CLI are clients of HQ, not sources of authority.
@@ -780,13 +784,13 @@ bot-signed commits) and uses `Refs #N` for partial work.
 
 | # | Repo | WP | PR | Done when |
 | --- | --- | --- | --- | --- |
-| 1 | daemon | WP1 | **Contracts:** glossary, JSON Schemas for 0.4 Appendix A records, error registry (0.4's minimum codes), positive and negative fixtures, the R1–R12 → tests traceability matrix, and this inventory as the compatibility baseline | Fixtures validate; a schema review finds no vendor token (R10) |
+| 1 | contracts | WP1 | **Contracts** in `true-line/soul-contracts` (D5): glossary, JSON Schemas for 0.4 Appendix A records, error registry (0.4's minimum codes), positive and negative fixtures, the R1–R12 → tests traceability matrix, and this inventory as the compatibility baseline (referenced from there at a pinned commit) | Fixtures validate; a schema review finds no vendor token (R10) |
 | 2 | identity | WP7 | **Golden surface tests** for every `agent-bot` command, MCP tool and route-auth row | Green on `main` unchanged |
 | 3 | identity | WP2 | **Break C1** (inversion; `ownerGate` → approvals port) | The `identity → soul` edge is gone |
 | 4 | identity | WP3 | **Break C2, C4, C5** | SCC count down to 2 |
 | 5 | identity | WP3 | **Break C3** (`sop.mjs` split, `RevisionStore`) | No cycles |
 | 6 | identity | WP1 | **Target and domain columns** in `runtime-modules.json`, plus a test forbidding new plugin → plugin edges | Merged, no runtime change |
-| 7 | daemon | WP1 | **SDK v0:** `definePlugin`, host services, `createTestHost`, plugin conformance suite, `wire/` | Pinned, digested copy |
+| 7 | daemon | WP1 | **SDK v0:** `definePlugin`, host services, `createTestHost`, plugin conformance suite, `wire/`; pins the `soul-contracts` release from PR 1 by digest | Pinned, digested copy |
 | 8 | identity | WP2 | **Route registry** (generalises `createIdentityRoutes`/`createSoulRoutes`) | `daemon-route-auth.test.mjs` unchanged |
 | 9 | identity | WP3 | **MCP and CLI registries** | Golden tests green |
 | 10 | identity | WP2 | **Identity-service link split and hardening** (§4.7) | Each refusal tested |
@@ -813,7 +817,7 @@ bot-signed commits) and uses `Refs #N` for partial work.
 | --- | --- | --- | --- | --- |
 | 17 | server | WP2 | **Identity service:** grant-bound minting per task and operation, credential issuance records with `task_id` and `operation_id`, live tokens revoked on device revoke and `device_revoked` on every call afterwards, hardware attestation, an owner policy to refuse software-key devices, device self-revoke, owner-unlock vault | Documented in the server API docs; revocation test shows cached tokens dropped and `device_revoked` |
 | 18 | identity | WP2 | **Credential references resolved by HQ;** `legacy-local-custody` off by default and opt-in only under the standalone profile; `doctor` and `status` flag it and any key file | No long-lived secret on a fresh host |
-| 19 | comms | WP4 | **Brokered inference and service adapter** (GitHub), action ledger with reconciliation, budgets and sub-allocations | T06–T11, T17–T19, T23, T25, T26 |
+| 19 | comms | WP4 | **Brokered inference and service adapter** (GitHub), action ledger with reconciliation, budgets and sub-allocations. Under `managed-protected`, service writes go only through this adapter; members get no service tokens and no member-side `signed-commit` (Q4) | T06–T11, T17–T19, T23, T25, T26; negative tests for a direct member write and for a weaker profile claiming protected |
 | 20 | identity | WP4 | **Retire gh-app-hook** | `doctor` has no `inbox.*` checks |
 
 ### Stage 3: operator pilot (WP5, WP6)
@@ -842,9 +846,9 @@ federation.
 
 ## 10. Decisions, open questions, risks
 
-### 10.1 Decisions (recorded 2026-10-27)
+### 10.1 Decisions
 
-Chris decided these on 2026-10-27, after PR #2 merged (issue #1).
+D1–D4 were decided on 2026-10-27, after PR #2 merged (issue #1); D5–D7 on 2026-11-07. Each is tracked in this repository's [Decisions discussions](https://github.com/true-line/agent-bot-daemon/discussions/categories/decisions).
 
 - **D1. agent-bot-daemon is HQ. Accepted.** managed-machine stays the
   provisioner: it creates HQ's account and the member accounts. The
@@ -911,7 +915,8 @@ Chris decided these on 2026-10-27, after PR #2 merged (issue #1).
     request) are reachable by any `user` process. They never yield a raw
     secret and are receipted with soul and session. Privileged and policy
     operations are not reachable, because they need the presence
-    signature. Per-member or per-harness accounts (Q1) close the rest.
+    signature. Per-member accounts (D7) close the rest for members; what
+    stays in `user` is the owner and the owner's delegates (D7).
   - **Repository home:** the target repositories are `true-line/*`
     (`agent-bot-daemon`, `agent-bot-identity`, `agent-bot-soul`,
     `agent-comms`, `agent-bot-machine`). Work lands in the current `qwts`
@@ -931,6 +936,45 @@ Chris decided these on 2026-10-27, after PR #2 merged (issue #1).
     owner approves the re-pin at agent-machine and the agent-bot signer pin
     (`presence.signer`) changes through the owner gate. Until that
     statement is accepted, a build from the new team is refused.
+- **D5. The WP1 contracts live in `true-line/soul-contracts`, not in
+  this repository. Accepted 2026-11-07.**
+  §3.1 and §9 row 1 had put the WP1 schemas and fixtures here, while the
+  Soul Agent Platform repository plan (soul-contracts
+  `papers/repository-plan.md`, 2026-10-24) puts them in soul-contracts,
+  which already shipped `hq/v1` Hello and admission result. The two
+  baselines were derived independently (agent-bot-daemon#59 here, and
+  soul-contracts 0.2.0) and then merged into soul-contracts 0.3.0.
+  - **Why there:** HQ is one implementer among several (soul-package,
+    agent-comms, agent-bot-identity, soul-adapters, soul-conformance), and
+    0.4 forbids an implementer editing a shared schema to make its own code
+    pass. Keeping the contracts in HQ's own repository would break that
+    rule and point the other repositories' dependencies at HQ.
+  - **Here:** agent-bot-daemon pins a soul-contracts release by digest (PR
+    7) and keeps no local copies. This plan's Appendix A stays the
+    compatibility inventory, which soul-contracts references at a pinned
+    commit.
+- **D6. HQ runs in its own OS account. Accepted 2026-11-07 (answers
+  Q2).** The account is `_agent-bot-hq` on macOS (a hidden role account) and
+  `agent-bot-hq` on Linux, created by agent-bot-machine (the provisioner,
+  D1). HQ does not share `admin` with agent-bot-machine: if it did, it could
+  read the admin-owned keys and files directly, and D4's presence check on
+  privileged requests would stop being a boundary. Members and the owner's
+  `user` account cannot read HQ's store.
+- **D7. On macOS, one OS account per member. Accepted 2026-11-07 (answers
+  Q1).** ENG-0339 is amended rather than replaced: its account creation and
+  sandbox profile are kept, keyed by member instead of by harness, so two
+  members on the same harness no longer share state (0.4 §4, T01–T03). The
+  amendment lands in the SOP repository; #56 depends on it.
+  - **Delegates stay in the owner's account.** Per-member accounts are for
+    Soul members doing development work, which authenticate as their
+    agent-bot bot identity. An agent the owner runs in their own `user`
+    account (for example Mason) is the owner's **delegate**. It has the
+    owner's unbounded access, works on owner-level tasks rather than
+    routine development, acts as the owner and says so when it posts, and
+    where a delegate and another agent conflict the delegate generally takes
+    precedence. D7 does not move delegates. D4 is unchanged: a privileged
+    request still needs the owner's presence signature, which a delegate
+    can request but not produce.
 - **`legacy-local-custody`: removed at stage 3 exit or on 2027-01-31,
   whichever comes first.** It is off by default until then. It shipped off
   by default, with the date enforced in code, in
@@ -938,24 +982,28 @@ Chris decided these on 2026-10-27, after PR #2 merged (issue #1).
 
 ### 10.2 Open questions
 
-- **Q1. Member accounts on macOS.** ENG-0339 gives one account per
-  *harness*, and 0.4 wants one per *member*. Do we extend ENG-0339 or
-  replace it?
-- **Q2. The HQ account.** What is its name, and is it created by
-  managed-machine or by the HQ installer?
-- **Q3. The SOUL.md name.** Should the persona primitive keep the file name
-  `SOUL.md`?
-- **Q4.** Should service writes (signed commits) go only through the
-  broker's GitHub adapter in the protected profile, retiring the member-side
-  `signed-commit` there?
-- **Q5. The agent-watcher model.** 0.4 §12 names true-line's agent-watcher
-  model for directives and queries as a WP1 input. Who supplies it?
-- **Q6. The browser PWA.** Keep it as an optional owner client, or drop it
-  in favour of GeniusBar and the CLI?
-- **Q7.** Should the identity service push a "notices waiting" hint through
-  a relay, or is the broker's pull enough?
-- **Q8. Federation crypto.** Who reviews the profile, and does
-  agent-comms' existing federation candidate work feed it?
+- **Q1.** Answered by D7.
+- **Q2.** Answered by D6.
+- **Q3.** Answered ([#70](https://github.com/true-line/agent-bot-daemon/discussions/70)): keep `SOUL.md` (§5.2).
+- **Q4.** Answered ([#71](https://github.com/true-line/agent-bot-daemon/discussions/71)): under `managed-protected`, service
+  writes go only through the broker's GitHub adapter; member-side
+  `signed-commit` stays only in the cooperative and unenforced profiles,
+  which receipts name (Stage 2b, PR 19).
+- **Q5.** Answered in soul-contracts' Decisions: Appendix A's directive or
+  query (`wire/v1/directive-or-query`) is authoritative. agent-watcher maps
+  its vocabulary onto it or records its own model as superseded, and
+  anything it has that Appendix A lacks arrives as a soul-contracts change.
+- **Q6.** Answered ([#72](https://github.com/true-line/agent-bot-daemon/discussions/72)): keep the PWA, read-only for the pilot
+  (§7.1). A browser write path needs its own reviewed presence design.
+- **Q7.** Answered ([#73](https://github.com/true-line/agent-bot-daemon/discussions/73)): the broker's pull is enough for the
+  MVP, with no relay-pushed hint (§4.8). Measure notice latency and volume
+  first; any later hint is an authenticated `notify`-class signal that
+  cannot cold-start a Soul.
+- **Q8.** Answered ([#74](https://github.com/true-line/agent-bot-daemon/discussions/74); soul-contracts
+  [C19](https://github.com/true-line/soul-contracts/discussions/22)): one
+  named external cryptography reviewer before agent-comms step 6, with
+  agent-comms' federation candidate as an input, not the baseline. The
+  owner names the reviewer.
 
 ### 10.3 Risks
 
