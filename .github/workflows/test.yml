@@ -1,0 +1,23 @@
+name: test
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      # No external actions: checkout is plain git, and the runner's preinstalled Node runs the tests.
+      - name: checkout
+        env:
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
+          git fetch -q --no-tags --depth 1 origin "+${REF}:refs/ci/head"
+          git checkout -q --detach refs/ci/head
+      - name: test
+        run: |
+          node --version
+          npm test
