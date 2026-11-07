@@ -562,6 +562,8 @@ R2.
     custody lets the lease expire and the notice return.
   - Delivery is at least once, with one committed transition per message
     ID (T05).
+  - There is no relay-pushed "notices waiting" hint (Q7). Pull latency
+    and volume are measured first.
 - **Outages.** If the relay is down, local conversations, tasks and
   permitted operations continue and outbound messages queue (R9, T13). If
   the identity service is down, notices wait in its queue (kept 7 days).
@@ -600,8 +602,9 @@ harness's native file. Because it is a primitive, the rules of 0.4 §10
 apply. Only owner acceptance changes it: a dream run can only propose a
 candidate. It can't be marked optional for an adapter. The current
 `AGENTS.md` becomes `primitives/standing-instructions/`, and the existing
-skills become `primitives/<name>/`. Whether to keep the file name `SOUL.md`
-is open question Q3.
+skills become `primitives/<name>/`. The file name stays `SOUL.md` (Q3);
+SoulInfo.json and SoulLock.json remain the only configuration authorities,
+and the persona is rendered by `soul build` and pinned by digest.
 
 ### 5.3 Digests and manifest
 
@@ -704,7 +707,7 @@ Source modules: Appendix A, `soul-runtime/core`, `/hq` and `/entry-point`.
 | macOS, Linux | `hq/v1` over a Unix domain socket in HQ's state directory | The owner, i.e. the host account that installed HQ (0.4 §4), checked by peer credentials |
 | Windows | Named pipe with a DACL for the owner SID | Owner SID |
 | Remote / headless | The owner forwards the control socket over SSH (MVP); OAuth or Kerberos authenticators later | Owner, through the tunnel. **Never through a relay** (R2). |
-| Browser PWA (optional) | Today's `agent-web` on `127.0.0.1`, with a pairing code from the owner CLI and an HttpOnly cookie | Owner session. It is the only TCP listener, loopback only, and off unless `agent-bot web open` is run. |
+| Browser PWA (optional, read-only for the pilot, Q6) | Today's `agent-web` on `127.0.0.1`, with a pairing code from the owner CLI and an HttpOnly cookie | Owner session. It is the only TCP listener, loopback only, and off unless `agent-bot web open` is run. Status, receipts and task inspection only, enforced at the API boundary; no approvals, policy, grant, lifecycle, task-submission or credential operations. Meets WCAG 2.2 AA. |
 | Mobile | Post-MVP, and only through an owner-opened tunnel | Owner |
 
 GeniusBar and the HQ CLI are clients of HQ, not sources of authority.
@@ -814,7 +817,7 @@ bot-signed commits) and uses `Refs #N` for partial work.
 | --- | --- | --- | --- | --- |
 | 17 | server | WP2 | **Identity service:** grant-bound minting per task and operation, credential issuance records with `task_id` and `operation_id`, live tokens revoked on device revoke and `device_revoked` on every call afterwards, hardware attestation, an owner policy to refuse software-key devices, device self-revoke, owner-unlock vault | Documented in the server API docs; revocation test shows cached tokens dropped and `device_revoked` |
 | 18 | identity | WP2 | **Credential references resolved by HQ;** `legacy-local-custody` off by default and opt-in only under the standalone profile; `doctor` and `status` flag it and any key file | No long-lived secret on a fresh host |
-| 19 | comms | WP4 | **Brokered inference and service adapter** (GitHub), action ledger with reconciliation, budgets and sub-allocations | T06–T11, T17–T19, T23, T25, T26 |
+| 19 | comms | WP4 | **Brokered inference and service adapter** (GitHub), action ledger with reconciliation, budgets and sub-allocations. Under `managed-protected`, service writes go only through this adapter; members get no service tokens and no member-side `signed-commit` (Q4) | T06–T11, T17–T19, T23, T25, T26; negative tests for a direct member write and for a weaker profile claiming protected |
 | 20 | identity | WP4 | **Retire gh-app-hook** | `doctor` has no `inbox.*` checks |
 
 ### Stage 3: operator pilot (WP5, WP6)
@@ -912,7 +915,8 @@ D1–D4 were decided on 2026-10-27, after PR #2 merged (issue #1); D5–D7 on 20
     request) are reachable by any `user` process. They never yield a raw
     secret and are receipted with soul and session. Privileged and policy
     operations are not reachable, because they need the presence
-    signature. Per-member or per-harness accounts (Q1) close the rest.
+    signature. Per-member accounts (D7) close the rest for members; what
+    stays in `user` is the owner and the owner's delegates (D7).
   - **Repository home:** the target repositories are `true-line/*`
     (`agent-bot-daemon`, `agent-bot-identity`, `agent-bot-soul`,
     `agent-comms`, `agent-bot-machine`). Work lands in the current `qwts`
@@ -961,6 +965,16 @@ D1–D4 were decided on 2026-10-27, after PR #2 merged (issue #1); D5–D7 on 20
   sandbox profile are kept, keyed by member instead of by harness, so two
   members on the same harness no longer share state (0.4 §4, T01–T03). The
   amendment lands in the SOP repository; #56 depends on it.
+  - **Delegates stay in the owner's account.** Per-member accounts are for
+    Soul members doing development work, which authenticate as their
+    agent-bot bot identity. An agent the owner runs in their own `user`
+    account (for example Mason) is the owner's **delegate**. It has the
+    owner's unbounded access, works on owner-level tasks rather than
+    routine development, acts as the owner and says so when it posts, and
+    where a delegate and another agent conflict the delegate generally takes
+    precedence. D7 does not move delegates. D4 is unchanged: a privileged
+    request still needs the owner's presence signature, which a delegate
+    can request but not produce.
 - **`legacy-local-custody`: removed at stage 3 exit or on 2027-01-31,
   whichever comes first.** It is off by default until then. It shipped off
   by default, with the date enforced in code, in
@@ -970,21 +984,26 @@ D1–D4 were decided on 2026-10-27, after PR #2 merged (issue #1); D5–D7 on 20
 
 - **Q1.** Answered by D7.
 - **Q2.** Answered by D6.
-- **Q3. The SOUL.md name.** Should the persona primitive keep the file name
-  `SOUL.md`?
-- **Q4.** Should service writes (signed commits) go only through the
-  broker's GitHub adapter in the protected profile, retiring the member-side
-  `signed-commit` there?
+- **Q3.** Answered ([#70](https://github.com/true-line/agent-bot-daemon/discussions/70)): keep `SOUL.md` (§5.2).
+- **Q4.** Answered ([#71](https://github.com/true-line/agent-bot-daemon/discussions/71)): under `managed-protected`, service
+  writes go only through the broker's GitHub adapter; member-side
+  `signed-commit` stays only in the cooperative and unenforced profiles,
+  which receipts name (Stage 2b, PR 19).
 - **Q5.** Answered in soul-contracts' Decisions: Appendix A's directive or
   query (`wire/v1/directive-or-query`) is authoritative. agent-watcher maps
   its vocabulary onto it or records its own model as superseded, and
   anything it has that Appendix A lacks arrives as a soul-contracts change.
-- **Q6. The browser PWA.** Keep it as an optional owner client, or drop it
-  in favour of GeniusBar and the CLI?
-- **Q7.** Should the identity service push a "notices waiting" hint through
-  a relay, or is the broker's pull enough?
-- **Q8. Federation crypto.** Who reviews the profile, and does
-  agent-comms' existing federation candidate work feed it?
+- **Q6.** Answered ([#72](https://github.com/true-line/agent-bot-daemon/discussions/72)): keep the PWA, read-only for the pilot
+  (§7.1). A browser write path needs its own reviewed presence design.
+- **Q7.** Answered ([#73](https://github.com/true-line/agent-bot-daemon/discussions/73)): the broker's pull is enough for the
+  MVP, with no relay-pushed hint (§4.8). Measure notice latency and volume
+  first; any later hint is an authenticated `notify`-class signal that
+  cannot cold-start a Soul.
+- **Q8.** Answered ([#74](https://github.com/true-line/agent-bot-daemon/discussions/74); soul-contracts
+  [C19](https://github.com/true-line/soul-contracts/discussions/22)): one
+  named external cryptography reviewer before agent-comms step 6, with
+  agent-comms' federation candidate as an input, not the baseline. The
+  owner names the reviewer.
 
 ### 10.3 Risks
 
