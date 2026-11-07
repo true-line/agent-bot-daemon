@@ -543,7 +543,9 @@ R2.
     expiry, size, wake class and required capabilities.
   - The inner message is sealed between endpoint brokers. Relays can't
     decrypt it, extend expiry or change the destination.
-  - Public federation stays gated until the crypto profile is reviewed.
+  - Public federation stays off until the crypto profile is reviewed
+    (Q8). No reviewer is named yet, and that does not block anything
+    through Stage 3.
 - **No remote control.** Relays and the identity service can't start, stop,
   exec or call plugin code. A relay frame that looks like lifecycle never
   reaches the control socket (T12).
@@ -838,7 +840,7 @@ bot-signed commits) and uses `Refs #N` for partial work.
 | --- | --- | --- | --- | --- |
 | 28 | soul-runtime | WP5 | **Coordinated move and fork** with transfer records | T15; P5, P6 |
 | 29 | daemon | WP2 | **macOS protected profile** (per-member accounts plus a sandbox; HQ in its own account) | Same hostile-member suite as Linux |
-| 30 | comms | WP4 | **Relay mode:** site relay, then cloud relay; reviewed crypto profile | T12, T13 |
+| 30 | comms | WP4 | **Relay mode:** site relay, then cloud relay. The crypto profile stays a candidate, and public federation stays off, until it is reviewed (Q8) | T12, T13 |
 
 **Post-MVP:** the installation authority (partition-tolerant moves), hosted
 Souls (D3), mobile owner clients, exposed specialist endpoints, public
@@ -1000,10 +1002,19 @@ D1–D4 were decided on 2026-10-27, after PR #2 merged (issue #1); D5–D7 on 20
   first; any later hint is an authenticated `notify`-class signal that
   cannot cold-start a Soul.
 - **Q8.** Answered ([#74](https://github.com/true-line/agent-bot-daemon/discussions/74); soul-contracts
-  [C19](https://github.com/true-line/soul-contracts/discussions/22)): one
-  named external cryptography reviewer before agent-comms step 6, with
-  agent-comms' federation candidate as an input, not the baseline. The
-  owner names the reviewer.
+  [C19](https://github.com/true-line/soul-contracts/discussions/22)): no
+  paid external reviewer, because the project has no budget for one. The
+  decision is that no reviewer is named yet and federation stays off:
+  - **Gated:** public federation and agent-comms step 6, until a reviewer
+    is named. The reviewer can be an agent or a service the owner adds to
+    the remote control plane; the profile states what kind of review it
+    had.
+  - **Not blocked:** local HQ-to-Soul work, the pilot, and everything
+    through Stage 3.
+  - **The agent-comms federation candidate** is input only. Agents may keep
+    preparing it; they may not accept it or turn on public federation.
+  - **`wire/v1` and `sealed-inner-v1`** do not change until a reviewed
+    profile lands in soul-contracts as a contract change.
 
 ### 10.3 Risks
 
