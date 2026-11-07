@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "record": "canonicalization",
+  "contract": "shared",
+  "description": "JCS (RFC 8785) vectors: the canonical form is compact UTF-8 JSON with lexicographically sorted object keys and ECMAScript number serialization. The 'canonical' field is the exact UTF-8 byte string whose SHA-256 is pinned in canonical_sha256.",
+  "vectors": [
+    {
+      "id": "sorted-keys",
+      "input": {
+        "b": 2,
+        "a": 1
+      },
+      "canonical": "{\"a\":1,\"b\":2}",
+      "canonical_sha256": "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
+    },
+    {
+      "id": "nested-and-array-order-preserved",
+      "input": {
+        "z": {
+          "y": 2,
+          "x": 1
+        },
+        "a": [
+          3,
+          1,
+          2
+        ]
+      },
+      "canonical": "{\"a\":[3,1,2],\"z\":{\"x\":1,\"y\":2}}",
+      "canonical_sha256": "8c89f2abd3d90dfd5d2970228257cbf0e6769e796d633827601ff3ca80a6938f"
+    },
+    {
+      "id": "number-serialization",
+      "input": {
+        "numbers": [
+          333333333.3333333,
+          1e+30,
+          4.5,
+          0.002,
+          1e-27
+        ]
+      },
+      "canonical": "{\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27]}",
+      "canonical_sha256": "7c892d3452ad85ad65857a43e8dcac93b79475d2334fc3e85bac5c599142c158"
+    },
+    {
+      "id": "unicode-passthrough",
+      "input": {
+        "é": "Euro Sign"
+      },
+      "canonical": "{\"é\":\"Euro Sign\"}",
+      "canonical_sha256": "cafb592918dc00193994018c7c523893496208ce7dc85a3e8bfa7124ad71a048"
+    },
+    {
+      "id": "control-char-escaped",
+      "input": {
+        "a": "line\nbreak"
+      },
+      "canonical": "{\"a\":\"line\\nbreak\"}",
+      "canonical_sha256": "3aed3ed56b463d0fd1e67413a69c745cefddce2a47fc296a778859697b9c0ce3"
+    },
+    {
+      "id": "empty-object",
+      "input": {},
+      "canonical": "{}",
+      "canonical_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    }
+  ]
+}

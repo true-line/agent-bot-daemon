@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "wire/v1 outer frame",
+  "description": "0.4 §6 and Appendix A: routing information visible to relays. destination_epoch is the sender's last-known epoch, a routing hint; only commits are fenced, never inbound delivery. The sealed block is opaque to relays; the cryptographic contract defines its encodings. Inline frames are limited to 256 KiB.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "wire_version",
+    "message_id",
+    "destination_soul",
+    "destination_epoch",
+    "expires_at",
+    "payload_size",
+    "wake_class",
+    "required_capabilities"
+  ],
+  "properties": {
+    "wire_version": { "const": 1 },
+    "message_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "destination_soul": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "destination_epoch": { "type": "integer", "minimum": 0 },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "payload_size": { "type": "integer", "minimum": 0, "maximum": 262144 },
+    "wake_class": { "type": "string", "enum": ["none", "notify", "task", "owner"] },
+    "required_capabilities": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+      "uniqueItems": true
+    },
+    "sealed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "recipient_key_id", "ciphertext"],
+      "properties": {
+        "profile": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "recipient_key_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+        "ciphertext": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

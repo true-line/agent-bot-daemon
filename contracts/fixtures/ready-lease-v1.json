@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "record": "ready-lease",
+  "contract": "hq/v1",
+  "schema": "../schemas/hq-v1/ready-lease.schema.json",
+  "vectors": [
+    {
+      "id": "ready-warm",
+      "expected": "valid",
+      "data": {
+        "runtime_id": "runtime_lead_8",
+        "installation_epoch": 4,
+        "readiness_state": "warm",
+        "adapter_versions": {
+          "acp": "1.2.0"
+        },
+        "lease_generation": 3,
+        "renewal_sequence": 17,
+        "observed_health": "healthy"
+      },
+      "canonical_sha256": "2b58e7b4e72e55b09d02aafecbf94448c4eebab94be1339ac582e87d5e801ae1"
+    },
+    {
+      "id": "lease-renewal-cold",
+      "expected": "valid",
+      "data": {
+        "runtime_id": "runtime_spec_2",
+        "installation_epoch": 4,
+        "readiness_state": "cold",
+        "adapter_versions": {},
+        "lease_generation": 1,
+        "renewal_sequence": 1,
+        "observed_health": "degraded"
+      },
+      "canonical_sha256": "fac9336e3df94c243b04d075d74f5a58d8f7baae13b370119ec4add036f5f66b"
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "record": "transfer-record",
+  "companion": "negatives",
+  "base": {
+    "file": "transfer-record-v1.json",
+    "sha256": "82e027161708988fce9dfcf22c314fba1514c59175dab5ed4918554e75f3215a"
+  },
+  "vectors": [
+    {
+      "id": "transfer-carries-grant",
+      "expected": "grant_revoked",
+      "refusal": "schema",
+      "note": "Grants never travel: coordinated transfer revokes old handles at the source and the destination is re-equipped after admission (0.4 §5, §11). The schema refuses any property beyond the record fields.",
+      "data": {
+        "soul_id": "agent_example",
+        "source_installation_id": "install_1",
+        "destination_installation_id": "install_2",
+        "definition_digest": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "manifest_digest": "4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c",
+        "settled_operation_watermark": 42,
+        "epoch_handoff_evidence": [
+          "epoch_surrender_record_1"
+        ],
+        "grant_handle": "hnd_5f8a2c91d6b74e0a"
+      }
+    },
+    {
+      "id": "transfer-no-epoch-evidence",
+      "expected": "evidence_missing",
+      "refusal": "schema",
+      "note": "Coordinated moves require epoch handoff evidence; an empty evidence list cannot surrender the source lease.",
+      "data": {
+        "soul_id": "agent_example",
+        "source_installation_id": "install_1",
+        "destination_installation_id": "install_2",
+        "definition_digest": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "manifest_digest": "4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c",
+        "settled_operation_watermark": 42,
+        "epoch_handoff_evidence": []
+      }
+    }
+  ]
+}

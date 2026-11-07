@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hq/v1 Admission result",
+  "description": "0.4 Appendix A: installation epoch, admitted runtime IDs, negotiated versions, channel bindings, profile, lease expiry, decision ID. Issued only by HQ.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "installation_epoch",
+    "admitted_runtime_ids",
+    "negotiated_versions",
+    "channel_bindings",
+    "profile",
+    "lease_expiry",
+    "decision_id"
+  ],
+  "properties": {
+    "installation_epoch": { "type": "integer", "minimum": 0 },
+    "admitted_runtime_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" }
+    },
+    "negotiated_versions": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "integer", "minimum": 1 }
+    },
+    "channel_bindings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["channel", "binding"],
+        "properties": {
+          "channel": { "type": "string", "enum": ["broker", "control"] },
+          "binding": { "type": "string", "pattern": "^[A-Za-z0-9_-]{16,128}$" }
+        }
+      }
+    },
+    "profile": { "type": "string", "enum": ["managed-protected", "managed-cooperative", "standalone-unenforced"] },
+    "lease_expiry": { "type": "string", "format": "date-time" },
+    "decision_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" }
+  }
+}

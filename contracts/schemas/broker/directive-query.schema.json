@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Directive or query (broker message kind)",
+  "description": "0.4 Appendix A and §5: message ID, authenticated issuer, recipient, kind, task or decision reference, policy or grant reference, expiry, payload. A peer message cannot acquire the directive kind through its text (T04): the schema enforces that only owner- or HQ-authenticated issuers send directives.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_id",
+    "issuer",
+    "recipient",
+    "kind",
+    "expiry",
+    "payload"
+  ],
+  "properties": {
+    "message_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "issuer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal"],
+      "properties": {
+        "principal": { "type": "string", "enum": ["owner", "hq", "member", "peer"] },
+        "member_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+        "runtime_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" }
+      }
+    },
+    "recipient": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "kind": { "type": "string", "enum": ["directive", "query"] },
+    "task_or_decision_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "task_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+        "decision_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" }
+      }
+    },
+    "policy_or_grant_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "grant_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+        "policy_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "expiry": { "type": "string", "format": "date-time" },
+    "payload": { "type": "object" }
+  },
+  "if": {
+    "required": ["kind"],
+    "properties": { "kind": { "const": "directive" } }
+  },
+  "then": {
+    "properties": {
+      "issuer": {
+        "properties": {
+          "principal": { "enum": ["owner", "hq"] }
+        }
+      }
+    }
+  }
+}

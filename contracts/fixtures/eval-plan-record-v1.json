@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "record": "eval-plan-record",
+  "contract": "soul",
+  "schema": "../schemas/records/eval-plan-record.schema.json",
+  "vectors": [
+    {
+      "id": "eval-plan-two-cells",
+      "expected": "valid",
+      "data": {
+        "run_id": "run_2026_11_07",
+        "candidate_digest": "5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+        "baseline_digest": "6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e",
+        "cells": [
+          {
+            "role": "lead",
+            "adapter": "acp-fake",
+            "adapter_version": "1.2.0",
+            "provider": "provider-a",
+            "model_version": "model-2026-09"
+          },
+          {
+            "role": "specialist",
+            "adapter": "acp-fake",
+            "adapter_version": "1.2.0",
+            "provider": "provider-a",
+            "model_version": "model-2026-09"
+          }
+        ],
+        "train_task_set_digest": "708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f",
+        "held_out_task_set_digest": "08192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7",
+        "tolerance": 0.05,
+        "seed": 7,
+        "temperature": 0,
+        "cost_cap": 10
+      },
+      "canonical_sha256": "ca4437fa524f593d2065b2abf14d0de2850ba78bed7589bd50115cfb9d6ce43c"
+    }
+  ]
+}

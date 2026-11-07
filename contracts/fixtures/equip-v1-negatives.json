@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "record": "equip",
+  "companion": "negatives",
+  "base": {
+    "file": "equip-v1.json",
+    "sha256": "f1bc500050c92642ec4b74ee8a62c9e3b3c37468afe32aa718d2ea0d8adb6e4c"
+  },
+  "vectors": [
+    {
+      "id": "equip-embeds-secret",
+      "expected": "caller_mismatch",
+      "refusal": "schema",
+      "note": "Equip must never carry a secret: members receive references and handles only (0.4 Appendix A). The schema refuses any property beyond the reference fields.",
+      "data": {
+        "runtime_id": "runtime_lead_8",
+        "grant_handles": [
+          {
+            "member": "lead",
+            "channel_binding": "bind_lead_0000000001",
+            "handle": "hnd_5f8a2c91d6b74e0a"
+          }
+        ],
+        "credential_references": [
+          {
+            "name": "service_write",
+            "reference": "ref_9a1b2c3d4e5f6071",
+            "purpose": "task service writes resolved by HQ only"
+          }
+        ],
+        "approved_destinations": [
+          "inference:primary"
+        ],
+        "budget_sub_allocations": {
+          "working": 5,
+          "maintenance": 1
+        },
+        "provider_token": "at_secret_value_0123456789"
+      }
+    },
+    {
+      "id": "equip-user-chosen-short-handle",
+      "expected": "caller_mismatch",
+      "refusal": "schema",
+      "note": "A production grant handle is a broker-generated opaque value, never a user-chosen string (0.4 Appendix A).",
+      "data": {
+        "runtime_id": "runtime_lead_8",
+        "grant_handles": [
+          {
+            "member": "lead",
+            "channel_binding": "bind_lead_0000000001",
+            "handle": "hnd_1"
+          }
+        ],
+        "credential_references": [],
+        "approved_destinations": [
+          "inference:primary"
+        ],
+        "budget_sub_allocations": {
+          "working": 5,
+          "maintenance": 1
+        }
+      }
+    }
+  ]
+}

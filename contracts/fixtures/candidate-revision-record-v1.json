@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "record": "candidate-revision-record",
+  "contract": "soul",
+  "schema": "../schemas/records/candidate-revision-record.schema.json",
+  "vectors": [
+    {
+      "id": "candidate-evaluated-awaiting-owner",
+      "expected": "valid",
+      "data": {
+        "candidate_id": "candidate_3",
+        "parent_revision_digest": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "candidate_digest": "192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708",
+        "changes": [
+          {
+            "path": "primitives/standing-instructions/",
+            "class": "skill",
+            "diff_reference": "diff_9",
+            "rationale": "Tighten the standing instructions after repeated recall failures.",
+            "evidence_references": [
+              "note_31"
+            ],
+            "provenance": [
+              "member"
+            ],
+            "disclosure_labels": [
+              "internal"
+            ]
+          }
+        ],
+        "eval_matrix": [
+          {
+            "role": "lead",
+            "adapter_version": "1.2.0",
+            "outcome": "pass"
+          },
+          {
+            "role": "specialist",
+            "adapter_version": "1.2.0",
+            "outcome": "warn",
+            "error_code": "candidate_rejected"
+          }
+        ],
+        "pinned_adapter_versions": {
+          "acp-fake": "1.2.0"
+        },
+        "pinned_renderer_version": "0.1.0",
+        "status": "evaluated",
+        "rollback_target": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "life_changes_not_undone": [
+          "memorial/knowledge/consolidation_2026_11_07"
+        ]
+      },
+      "canonical_sha256": "b2acc00e0690275884863526070e989bbf833f19fcc5b4dae8e77c9d78ac83ac"
+    }
+  ]
+}

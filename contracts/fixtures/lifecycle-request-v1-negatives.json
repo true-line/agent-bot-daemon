@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "record": "lifecycle-request",
+  "companion": "negatives",
+  "base": {
+    "file": "lifecycle-request-v1.json",
+    "sha256": "c7d539ee9197040a8c232d39ac816fbf308fac3f2e9cced6e65efff102457538"
+  },
+  "vectors": [
+    {
+      "id": "lifecycle-recovery-operation",
+      "expected": "unsupported_version",
+      "refusal": "schema",
+      "note": "Recovery is not an hq/v1 operation (0.4 §5): the entry point runs the recovery ladder on its own authority. Unknown operations are unknown required semantics (T14).",
+      "data": {
+        "request_id": "request_79",
+        "operation": "recover",
+        "target_installation_id": "install_1",
+        "expected_state_revision": 12,
+        "reason": "lead crashed",
+        "owner_session_reference": "session_owner_1"
+      }
+    },
+    {
+      "id": "lifecycle-missing-owner-session",
+      "expected": "approval_mismatch",
+      "refusal": "schema",
+      "note": "Every lifecycle request records the authenticated owner session (0.4 §4); without one HQ cannot bind the decision.",
+      "data": {
+        "request_id": "request_80",
+        "operation": "stop",
+        "target_installation_id": "install_1",
+        "expected_state_revision": 13,
+        "reason": "owner stops the installation"
+      }
+    }
+  ]
+}

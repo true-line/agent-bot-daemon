@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dream grant record",
+  "description": "0.4 §10 and Appendix A: grant ID, Soul, run ID, dream runtime binding, readable paths, writable paths, approved destinations and executor, maintenance share, wall-clock limit, cell cap, checkpoint interval, expiry. Issued only by HQ. A dream run never writes primitives/, SoulInfo.json, SoulLock.json, or comms/ — the writable-path pattern refuses those (T29).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "grant_id",
+    "soul_id",
+    "run_id",
+    "runtime_binding",
+    "readable_paths",
+    "writable_paths",
+    "approved_destinations",
+    "maintenance_share",
+    "wall_clock_limit_seconds",
+    "cell_cap",
+    "expiry"
+  ],
+  "properties": {
+    "grant_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "soul_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "run_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "runtime_binding": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "readable_paths": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_./-]{0,255}$" }
+    },
+    "writable_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(?!primitives/|SoulInfo\\.json$|SoulLock\\.json$|comms/)[A-Za-z0-9_][A-Za-z0-9_./-]{0,255}$"
+      }
+    },
+    "approved_destinations": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.:-]{0,127}$" }
+    },
+    "executor": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "maintenance_share": { "type": "number", "minimum": 0 },
+    "wall_clock_limit_seconds": { "type": "integer", "minimum": 1 },
+    "cell_cap": { "type": "integer", "minimum": 1 },
+    "checkpoint_interval_seconds": { "type": "integer", "minimum": 1 },
+    "expiry": { "type": "string", "format": "date-time" }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "record": "hello",
+  "contract": "hq/v1",
+  "schema": "../schemas/hq-v1/hello.schema.json",
+  "vectors": [
+    {
+      "id": "hello-first-start",
+      "expected": "valid",
+      "data": {
+        "contract_version": 1,
+        "request_id": "request_1",
+        "soul_id": "agent_example",
+        "definition_digest": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "installation_id": "install_1",
+        "supported_capabilities": [
+          "sealed-inner-v1"
+        ],
+        "requested_roles": [
+          "lead",
+          "specialist"
+        ]
+      },
+      "canonical_sha256": "a3ca505d06f575e2d5a11d00d2e55553fb5b7734271dcfd1f0536b9fbdeedef8"
+    },
+    {
+      "id": "hello-on-move",
+      "expected": "valid",
+      "data": {
+        "contract_version": 1,
+        "request_id": "request_2",
+        "soul_id": "agent_example",
+        "definition_digest": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "installation_id": "install_2",
+        "prior_installation_epoch": 3,
+        "supported_capabilities": [
+          "sealed-inner-v1"
+        ],
+        "requested_roles": [
+          "lead"
+        ]
+      },
+      "canonical_sha256": "a28855f5aa1ab78381d6b81ec284a668b5814b2142ff47c28084690b02fa016d"
+    }
+  ]
+}

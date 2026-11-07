@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hq/v1 Equip",
+  "description": "0.4 Appendix A: runtime ID, one opaque grant handle per member bound to its channel, credential references, approved destinations, budget sub-allocations. Never a secret: members receive references and handles only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runtime_id",
+    "grant_handles",
+    "credential_references",
+    "approved_destinations",
+    "budget_sub_allocations"
+  ],
+  "properties": {
+    "runtime_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "grant_handles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["member", "channel_binding", "handle"],
+        "properties": {
+          "member": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+          "channel_binding": { "type": "string", "pattern": "^[A-Za-z0-9_-]{16,128}$" },
+          "handle": { "type": "string", "pattern": "^[A-Za-z0-9_-]{16,128}$", "description": "Broker-generated opaque value, never user-chosen (0.4 Appendix A)." }
+        }
+      }
+    },
+    "credential_references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "reference", "purpose"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+          "reference": { "type": "string", "pattern": "^[A-Za-z0-9_-]{16,128}$" },
+          "purpose": { "type": "string", "minLength": 1, "maxLength": 64 }
+        }
+      }
+    },
+    "approved_destinations": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.:-]{0,127}$" }
+    },
+    "budget_sub_allocations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["working", "maintenance"],
+      "properties": {
+        "working": { "type": "number", "minimum": 0 },
+        "maintenance": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "record": "ready-lease",
+  "companion": "negatives",
+  "base": {
+    "file": "ready-lease-v1.json",
+    "sha256": "636e8555b2cfb099b0820d3e181a4e8adad7b76deb741a0a0f42f57583ec7b35"
+  },
+  "vectors": [
+    {
+      "id": "lease-renewal-zero-sequence",
+      "expected": "lease_expired",
+      "refusal": "schema",
+      "note": "Renewal sequences start at 1; a zero sequence is a replay, and HQ rejects replay (0.4 Appendix A).",
+      "data": {
+        "runtime_id": "runtime_lead_8",
+        "installation_epoch": 4,
+        "readiness_state": "warm",
+        "adapter_versions": {
+          "acp": "1.2.0"
+        },
+        "lease_generation": 3,
+        "renewal_sequence": 0,
+        "observed_health": "healthy"
+      }
+    },
+    {
+      "id": "lease-unknown-health",
+      "expected": "lease_expired",
+      "refusal": "schema",
+      "note": "An observed-health value outside the enumeration cannot renew a lease; reachability stays unknown instead.",
+      "data": {
+        "runtime_id": "runtime_lead_8",
+        "installation_epoch": 4,
+        "readiness_state": "warm",
+        "adapter_versions": {
+          "acp": "1.2.0"
+        },
+        "lease_generation": 3,
+        "renewal_sequence": 18,
+        "observed_health": "dead"
+      }
+    }
+  ]
+}

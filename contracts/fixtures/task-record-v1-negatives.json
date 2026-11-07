@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "record": "task-record",
+  "companion": "negatives",
+  "base": {
+    "file": "task-record-v1.json",
+    "sha256": "796770113e0c0d78d9efbfbf7a8b106d54c300262864ae227ebbaca9b7567478"
+  },
+  "vectors": [
+    {
+      "id": "task-waiting-without-reason",
+      "expected": "revision_conflict",
+      "refusal": "schema",
+      "note": "A waiting task must record its reason (0.4 §7); the task store refuses the malformed transition before committing a revision.",
+      "data": {
+        "task_id": "task_19",
+        "requester": "principal:chris",
+        "accountable_soul": "agent_example",
+        "objective": "Publish the reviewed change to the service.",
+        "done_criteria": "service write receipt exists with a settled outcome",
+        "revision": 8,
+        "status": "waiting"
+      }
+    },
+    {
+      "id": "task-unknown-status",
+      "expected": "unsupported_version",
+      "refusal": "schema",
+      "note": "Unknown state names are unknown required semantics (R7, T14); the nine §7 states are exhaustive.",
+      "data": {
+        "task_id": "task_20",
+        "requester": "principal:chris",
+        "accountable_soul": "agent_example",
+        "objective": "Investigate the seeded issue.",
+        "done_criteria": "checks pass",
+        "revision": 1,
+        "status": "finished"
+      }
+    }
+  ]
+}

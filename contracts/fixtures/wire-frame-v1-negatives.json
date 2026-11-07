@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "record": "wire-frame",
+  "companion": "negatives",
+  "base": {
+    "file": "wire-frame-v1.json",
+    "sha256": "aa926e8722c1d3ee25c57f0ce6f558c0e94e8e796616032ff16fa0071f0364b1"
+  },
+  "semantic_now": "2026-11-07T00:00:00Z",
+  "negotiated_capabilities": [
+    "sealed-inner-v1"
+  ],
+  "vectors": [
+    {
+      "id": "frame-oversized",
+      "expected": "frame_too_large",
+      "refusal": "schema",
+      "note": "Inline frames are limited to 256 KiB (0.4 §6); larger artifacts use authorized content references.",
+      "data": {
+        "wire_version": 1,
+        "message_id": "message_55",
+        "destination_soul": "agent_example",
+        "destination_epoch": 4,
+        "expires_at": "2026-11-08T18:00:00Z",
+        "payload_size": 262145,
+        "wake_class": "none",
+        "required_capabilities": []
+      }
+    },
+    {
+      "id": "frame-duplicate-key",
+      "expected": "message_conflict",
+      "refusal": "parse",
+      "note": "Implementations reject duplicate JSON keys before processing payloads (0.4 §6). The raw text below carries message_id twice; strict parsing refuses it.",
+      "data_raw": "{\"wire_version\":1,\"message_id\":\"message_53\",\"message_id\":\"message_54\",\"destination_soul\":\"agent_example\",\"destination_epoch\":4,\"expires_at\":\"2026-11-08T18:00:00Z\",\"payload_size\":128,\"wake_class\":\"notify\",\"required_capabilities\":[]}"
+    },
+    {
+      "id": "frame-unknown-required-capability",
+      "expected": "required_capability_missing",
+      "refusal": "semantic",
+      "rule": "capability-not-negotiated",
+      "note": "The receiver refuses unknown required capabilities (T14). The negotiated set for this baseline is [\"sealed-inner-v1\"].",
+      "data": {
+        "wire_version": 1,
+        "message_id": "message_56",
+        "destination_soul": "agent_example",
+        "destination_epoch": 4,
+        "expires_at": "2026-11-08T18:00:00Z",
+        "payload_size": 128,
+        "wake_class": "notify",
+        "required_capabilities": [
+          "time-travel-9"
+        ]
+      }
+    },
+    {
+      "id": "frame-stale-expiry",
+      "expected": "message_expired",
+      "refusal": "semantic",
+      "rule": "expiry-before-now",
+      "note": "An expired frame is rejected rather than treated as new work (T25). The rule evaluates expiry against this file's semantic_now.",
+      "data": {
+        "wire_version": 1,
+        "message_id": "message_57",
+        "destination_soul": "agent_example",
+        "destination_epoch": 4,
+        "expires_at": "2020-01-01T00:00:00Z",
+        "payload_size": 128,
+        "wake_class": "notify",
+        "required_capabilities": []
+      }
+    }
+  ]
+}
