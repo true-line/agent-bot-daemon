@@ -461,7 +461,7 @@ which checks:
 - unique names;
 - an `auth` class on every `hq/v1` operation.
 
-The 0.4 WP1 fixtures (positive and negative), loaded from the pinned `soul-contracts` release, run against the real plugins.
+The 0.4 WP1 fixtures (positive and negative), loaded from the pinned `soul-contracts` release, run against the real plugins. The pin is `governance/soul-contracts.json`, which names the tag, commit and a `sha256-manifest-v1` digest (the §5.3 framing over `errors/`, `fixtures/` and `schemas/`). `scripts/soul-contracts.mjs` verifies the pin and returns the checked copy under `.cache/` for tests to load.
 
 ### 4.7 Identity-service link hardening
 
@@ -792,7 +792,7 @@ bot-signed commits) and uses `Refs #N` for partial work.
 | 4 | identity | WP3 | **Break C2, C4, C5** | SCC count down to 2 |
 | 5 | identity | WP3 | **Break C3** (`sop.mjs` split, `RevisionStore`) | No cycles |
 | 6 | identity | WP1 | **Target and domain columns** in `runtime-modules.json`, plus a test forbidding new plugin → plugin edges | Merged, no runtime change |
-| 7 | daemon | WP1 | **SDK v0:** `definePlugin`, host services, `createTestHost`, plugin conformance suite, `wire/`; pins the `soul-contracts` release from PR 1 by digest | Pinned, digested copy |
+| 7 | daemon | WP1 | **SDK v0:** `definePlugin`, host services, `createTestHost`, plugin conformance suite, `wire/`; pins the `soul-contracts` release from PR 1 by digest (the pin landed first, #76) | Pinned, digested copy |
 | 8 | identity | WP2 | **Route registry** (generalises `createIdentityRoutes`/`createSoulRoutes`) | `daemon-route-auth.test.mjs` unchanged |
 | 9 | identity | WP3 | **MCP and CLI registries** | Golden tests green |
 | 10 | identity | WP2 | **Identity-service link split and hardening** (§4.7) | Each refusal tested |
