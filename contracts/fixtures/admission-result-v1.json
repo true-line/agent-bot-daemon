@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "record": "admission-result",
+  "contract": "hq/v1",
+  "schema": "../schemas/hq-v1/admission-result.schema.json",
+  "vectors": [
+    {
+      "id": "admission-protected",
+      "expected": "valid",
+      "data": {
+        "installation_epoch": 4,
+        "admitted_runtime_ids": [
+          "runtime_lead_8"
+        ],
+        "negotiated_versions": {
+          "hq-v1": 1
+        },
+        "channel_bindings": [
+          {
+            "channel": "broker",
+            "binding": "bind_lead_0000000001"
+          }
+        ],
+        "profile": "managed-protected",
+        "lease_expiry": "2026-11-07T12:00:00Z",
+        "decision_id": "decision_9"
+      },
+      "canonical_sha256": "769a9604e9efd3d94d91af46b996dc1ee0c0dd5bf1aa95b57d9d217b7c4fe5fe"
+    },
+    {
+      "id": "admission-cooperative-two-runtimes",
+      "expected": "valid",
+      "data": {
+        "installation_epoch": 4,
+        "admitted_runtime_ids": [
+          "runtime_lead_8",
+          "runtime_spec_2"
+        ],
+        "negotiated_versions": {
+          "hq-v1": 1,
+          "task-v1": 1
+        },
+        "channel_bindings": [
+          {
+            "channel": "broker",
+            "binding": "bind_lead_0000000001"
+          },
+          {
+            "channel": "control",
+            "binding": "bind_ctrl_0000000001"
+          }
+        ],
+        "profile": "managed-cooperative",
+        "lease_expiry": "2026-11-07T12:00:00Z",
+        "decision_id": "decision_10"
+      },
+      "canonical_sha256": "f449da36e24b24b173e1b9b5817d2a55ba58396d7fe7116564fd1b43c63d3c04"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "description": "The 0.4 minimum contract error codes (Soul Agent Platform, draft 0.4, 'Minimum error codes'). Stable and add-only: never remove, renumber, or change the meaning of a code; mark a retired one deprecated. Implementation repos emit a code only after it is registered here. retryable and raised_by are WP1 proposals documented in contracts/README.md.",
+  "source": {
+    "document": "Soul Agent Platform, whitepaper draft 0.4 (2026-10-27)",
+    "sha256": "6e8b85af5aea5454314b7563fef83d50b5582f2b6bd9bd2a8a9bd64cdedd3030"
+  },
+  "codes": [
+    { "n": 1, "code": "unsupported_version", "raised_by": ["hq", "broker"], "retryable": false, "registered": "0.4", "summary": "The peer's contract version is outside the supported N and N-1 window (T14)." },
+    { "n": 2, "code": "required_capability_missing", "raised_by": ["broker"], "retryable": false, "registered": "0.4", "summary": "A frame requires a capability the receiver has not negotiated." },
+    { "n": 3, "code": "caller_mismatch", "raised_by": ["hq", "broker"], "retryable": false, "registered": "0.4", "summary": "The authenticated caller does not match the claimed runtime or handle binding (T01)." },
+    { "n": 4, "code": "stale_epoch", "raised_by": ["broker", "hq"], "retryable": false, "registered": "0.4", "summary": "A commit carries an installation epoch older than the authoritative current one." },
+    { "n": 5, "code": "lease_expired", "raised_by": ["hq", "broker"], "retryable": true, "registered": "0.4", "summary": "The runtime execution lease has expired; protected commits stop until a new lease is acquired." },
+    { "n": 6, "code": "grant_revoked", "raised_by": ["broker", "hq"], "retryable": false, "registered": "0.4", "summary": "Authority was revoked; consume, wake, and execution refuse it (T08)." },
+    { "n": 7, "code": "destination_denied", "raised_by": ["broker"], "retryable": false, "registered": "0.4", "summary": "The destination is not approved for this task's data restrictions (T09)." },
+    { "n": 8, "code": "budget_exhausted", "raised_by": ["broker"], "retryable": false, "registered": "0.4", "summary": "The ceiling or sub-allocation is spent; new protected spend refuses (T26)." },
+    { "n": 9, "code": "revision_conflict", "raised_by": ["hq"], "retryable": true, "registered": "0.4", "summary": "Compare-and-swap on the expected task revision failed; retry with the fresh revision." },
+    { "n": 10, "code": "message_conflict", "raised_by": ["broker"], "retryable": false, "registered": "0.4", "summary": "A message ID was reused with different content; the message is quarantined." },
+    { "n": 11, "code": "mailbox_full", "raised_by": ["broker"], "retryable": true, "registered": "0.4", "summary": "Backpressure at the mailbox capacity limit; accepted work is never silently dropped (T18)." },
+    { "n": 12, "code": "frame_too_large", "raised_by": ["broker"], "retryable": false, "registered": "0.4", "summary": "The frame exceeds the inline size limit; use an authorized content reference." },
+    { "n": 13, "code": "message_expired", "raised_by": ["broker"], "retryable": false, "registered": "0.4", "summary": "A queued message passed its expiry and is purged, not treated as new work (T25)." },
+    { "n": 14, "code": "quarantined", "raised_by": ["broker", "hq"], "retryable": false, "registered": "0.4", "summary": "The message or Soul is quarantined (poison threshold, conflict, or crash loop) until the cause is resolved (T23)." },
+    { "n": 15, "code": "definition_not_accepted", "raised_by": ["hq"], "retryable": false, "registered": "0.4", "summary": "Hello presented a definition digest that is not an accepted revision." },
+    { "n": 16, "code": "evidence_missing", "raised_by": ["hq"], "retryable": true, "registered": "0.4", "summary": "Completion criteria require evidence that was not supplied; supply it and retry." },
+    { "n": 17, "code": "approval_mismatch", "raised_by": ["hq", "broker"], "retryable": false, "registered": "0.4", "summary": "The proposed action no longer matches its approval record digest (T24)." },
+    { "n": 18, "code": "write_scope_conflict", "raised_by": ["hq"], "retryable": false, "registered": "0.4", "summary": "A task's write scope overlaps an active one without owner-allowed concurrent writers." },
+    { "n": 19, "code": "outcome_unknown", "raised_by": ["broker", "hq"], "retryable": false, "registered": "0.4", "summary": "An external effect's outcome is ambiguous; reconcile through lookup, never blind replay (T06)." },
+    { "n": 20, "code": "eval_coverage_missing", "raised_by": ["hq"], "retryable": false, "registered": "0.4", "summary": "Candidate acceptance lacks a passing cell for a (role, harness version) pair (T27)." },
+    { "n": 21, "code": "candidate_rejected", "raised_by": ["hq"], "retryable": false, "registered": "0.4", "summary": "The whole candidate was rejected on a failed cell; a narrowed candidate may be re-evaluated (T28)." },
+    { "n": 22, "code": "render_failed", "raised_by": ["soul-build"], "retryable": false, "registered": "0.4", "summary": "A non-optional primitive could not be rendered for an adapter; the failure names the class. Retryability depends on the named class." },
+    { "n": 23, "code": "source_chain_unapproved", "raised_by": ["hq"], "retryable": false, "registered": "0.4", "summary": "A proposal derived from peer or external-untrusted content waits for owner approval of its source chain (T30)." },
+    { "n": 24, "code": "dream_limit_exceeded", "raised_by": ["hq"], "retryable": false, "registered": "0.4", "summary": "A dream run breached its wall-clock or maintenance limit; no candidate is emitted (T29)." },
+    { "n": 25, "code": "credential_unavailable", "raised_by": ["hq", "identity-service"], "retryable": true, "registered": "0.4", "summary": "The identity service is unreachable; protected effects that need a fresh credential wait and retry when it returns." },
+    { "n": 26, "code": "device_revoked", "raised_by": ["hq", "identity-service"], "retryable": false, "registered": "0.4", "summary": "The device is revoked; cached tokens are dropped and recovery requires new enrollment." },
+    { "n": 27, "code": "profile_insufficient", "raised_by": ["hq", "broker"], "retryable": false, "registered": "0.4", "summary": "A protected claim was made under a weaker enforcement profile (T21)." }
+  ]
+}

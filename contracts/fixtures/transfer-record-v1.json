@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "record": "transfer-record",
+  "contract": "hq/v1",
+  "schema": "../schemas/records/transfer-record.schema.json",
+  "vectors": [
+    {
+      "id": "transfer-coordinated-move",
+      "expected": "valid",
+      "data": {
+        "soul_id": "agent_example",
+        "source_installation_id": "install_1",
+        "destination_installation_id": "install_2",
+        "definition_digest": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "life_selection": {
+          "include": [
+            "knowledge",
+            "comms_mirror"
+          ]
+        },
+        "manifest_digest": "4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c",
+        "settled_operation_watermark": 42,
+        "unresolved_operations": [],
+        "epoch_handoff_evidence": [
+          "epoch_surrender_record_1"
+        ]
+      },
+      "canonical_sha256": "b112158df871751f963c2ad63b41c75a73d27e6a6e8ff31589b10eb750561efb"
+    }
+  ]
+}

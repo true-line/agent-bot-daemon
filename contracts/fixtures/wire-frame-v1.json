@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "record": "wire-frame",
+  "contract": "wire/v1",
+  "schema": "../schemas/broker/wire-frame.schema.json",
+  "vectors": [
+    {
+      "id": "frame-sealed-task-wake",
+      "expected": "valid",
+      "data": {
+        "wire_version": 1,
+        "message_id": "message_53",
+        "destination_soul": "agent_example",
+        "destination_epoch": 4,
+        "expires_at": "2026-11-08T18:00:00Z",
+        "payload_size": 2048,
+        "wake_class": "task",
+        "required_capabilities": [
+          "sealed-inner-v1"
+        ],
+        "sealed": {
+          "profile": "crypto-profile-pending",
+          "recipient_key_id": "key_destination_2",
+          "ciphertext": "ciphertext_illustrative_value_0123456789"
+        }
+      },
+      "canonical_sha256": "dddf3e97b01611588404d4dc40b47ad555696fc66154c904f8e87f0d57f89891"
+    },
+    {
+      "id": "frame-notify-unsealed",
+      "expected": "valid",
+      "data": {
+        "wire_version": 1,
+        "message_id": "message_54",
+        "destination_soul": "agent_example",
+        "destination_epoch": 4,
+        "expires_at": "2026-11-08T18:00:00Z",
+        "payload_size": 128,
+        "wake_class": "notify",
+        "required_capabilities": []
+      },
+      "canonical_sha256": "c8252c65411c99d6d3fd81d5045934fc705a6ef89c8aff8f93760563e1f4b82c"
+    }
+  ]
+}

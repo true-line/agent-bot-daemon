@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "record": "action-record",
+  "companion": "negatives",
+  "base": {
+    "file": "action-record-v1.json",
+    "sha256": "7412359da17ed4937b8277d0e5780550d769533fa7e645e124784bef9776de15"
+  },
+  "vectors": [
+    {
+      "id": "action-unknown-state",
+      "expected": "unsupported_version",
+      "refusal": "schema",
+      "note": "Reconciliation depends on the five named action states (0.4 §7); unknown state names are unknown required semantics.",
+      "data": {
+        "operation_id": "operation_finish_17",
+        "idempotency_key": "idem_9f8e7d6c5b4a3210",
+        "caller": "runtime_lead_8",
+        "task_id": "task_17",
+        "expected_revision": 6,
+        "request_digest": "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b",
+        "state": "done"
+      }
+    },
+    {
+      "id": "action-missing-idempotency-key",
+      "expected": "message_conflict",
+      "refusal": "schema",
+      "note": "Without a stable idempotency key the effect cannot be made exactly-once (0.4 §7); the broker refuses to write the intent.",
+      "data": {
+        "operation_id": "operation_finish_17",
+        "caller": "runtime_lead_8",
+        "task_id": "task_17",
+        "expected_revision": 6,
+        "request_digest": "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b",
+        "state": "prepared"
+      }
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "record": "typed-note",
+  "contract": "soul",
+  "schema": "../schemas/records/typed-note.schema.json",
+  "vectors": [
+    {
+      "id": "note-handoff-before-lead-yields",
+      "expected": "valid",
+      "data": {
+        "note_id": "note_88",
+        "type": "handoff",
+        "task_id": "task_17",
+        "member_id": "lead",
+        "runtime_id": "runtime_lead_8",
+        "timestamp": "2026-11-07T09:00:00Z",
+        "sources": [
+          "receipt_56"
+        ],
+        "provenance": [
+          "member"
+        ],
+        "disclosure_restrictions": [
+          "confidential"
+        ],
+        "body": "Handing off: task_17 is mid-reconciliation; see action operation_finish_17 before acting."
+      },
+      "canonical_sha256": "fb0b0c0e364a20dbbec0f7c9b40d2933f0673be818b64f73d893a99c433b74ed"
+    },
+    {
+      "id": "note-finding-external-derived",
+      "expected": "valid",
+      "data": {
+        "note_id": "note_89",
+        "type": "finding",
+        "member_id": "specialist_1",
+        "runtime_id": "runtime_spec_2",
+        "timestamp": "2026-11-07T09:05:00Z",
+        "sources": [
+          "document_4"
+        ],
+        "provenance": [
+          "member",
+          "external-untrusted"
+        ],
+        "body": "The downloaded document suggests a cause; treat as unverified."
+      },
+      "canonical_sha256": "bf237a9f0c92c6fc071c932c884d668bb1204d82c84e623e617439386e4fe05a"
+    }
+  ]
+}

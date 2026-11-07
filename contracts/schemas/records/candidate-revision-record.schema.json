@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Candidate revision record",
+  "description": "0.4 §10 and Appendix A: candidate ID, parent revision digest, candidate digest, change list (path, class, diff reference, rationale, evidence references, provenance set, disclosure labels), eval matrix with per-cell outcome and error codes, pinned adapter and renderer versions, status, rollback target, life changes not undone by rollback. A sleep run cannot accept its own candidate (T22); a change derived from peer or external-untrusted content waits for owner source-chain approval (T30).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "candidate_id",
+    "parent_revision_digest",
+    "candidate_digest",
+    "changes",
+    "eval_matrix",
+    "status"
+  ],
+  "properties": {
+    "candidate_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "parent_revision_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "candidate_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "changes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "class", "rationale", "provenance"],
+        "properties": {
+          "path": { "type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_./-]{0,255}$" },
+          "class": { "type": "string", "enum": ["skill", "helper", "tool_guidance", "hook", "role_routing"] },
+          "diff_reference": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "rationale": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "evidence_references": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" }
+          },
+          "provenance": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "enum": ["owner", "hq", "member", "peer", "external-untrusted"] }
+          },
+          "disclosure_labels": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        }
+      }
+    },
+    "eval_matrix": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "adapter_version", "outcome"],
+        "properties": {
+          "role": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+          "adapter_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "outcome": { "type": "string", "enum": ["pass", "fail", "warn"] },
+          "error_code": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" }
+        }
+      }
+    },
+    "pinned_adapter_versions": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 64 }
+    },
+    "pinned_renderer_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "status": {
+      "type": "string",
+      "enum": ["proposed", "evaluated", "partially_passed", "rejected", "accepted", "superseded"]
+    },
+    "rollback_target": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "life_changes_not_undone": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    }
+  }
+}

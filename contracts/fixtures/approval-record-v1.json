@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "record": "approval-record",
+  "contract": "hq/v1",
+  "schema": "../schemas/hq-v1/approval-record.schema.json",
+  "vectors": [
+    {
+      "id": "approval-single-action",
+      "expected": "valid",
+      "data": {
+        "approval_id": "approval_31",
+        "owner_session_reference": "session_owner_1",
+        "action_digest": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+        "scope": {
+          "class": "single-action",
+          "action": "service.write",
+          "resource": "repo:example/policy",
+          "data_destination": "service:example",
+          "expected_cost": 0
+        },
+        "expiry": "2026-11-08T00:00:00Z",
+        "hq_signature": "sig_Q1Z3x8yK9pQ2wE5rT7uI9oP0aS1dF2gH"
+      },
+      "canonical_sha256": "89eb7f1927260becab6f7e67210705788d9b745112cfb2161885b3ae1c75154b"
+    },
+    {
+      "id": "approval-bounded-class",
+      "expected": "valid",
+      "data": {
+        "approval_id": "approval_32",
+        "owner_session_reference": "session_owner_1",
+        "action_digest": "2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a",
+        "scope": {
+          "class": "bounded-class",
+          "action": "inference.request",
+          "resource": "soul:agent_example"
+        },
+        "expiry": "2026-11-14T00:00:00Z",
+        "hq_signature": "sig_R2Z3x8yK9pQ2wE5rT7uI9oP0aS1dF2gH4"
+      },
+      "canonical_sha256": "b2dc8cbf4b4efeb4ed168b1f50cc6569efcb0d30c526720c6c96604ae63a47fe"
+    }
+  ]
+}

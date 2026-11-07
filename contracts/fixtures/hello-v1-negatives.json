@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "record": "hello",
+  "companion": "negatives",
+  "base": {
+    "file": "hello-v1.json",
+    "sha256": "e7944e2bc6cdb0387a36c43729ff94e7b70957374eb1f088948518447b080e47"
+  },
+  "vectors": [
+    {
+      "id": "hello-bad-definition-digest",
+      "expected": "definition_not_accepted",
+      "refusal": "schema",
+      "note": "Appendix A: reject an unaccepted definition. A value that is not a SHA-256 hex digest can never name an accepted revision.",
+      "data": {
+        "contract_version": 1,
+        "request_id": "request_1",
+        "soul_id": "agent_example",
+        "definition_digest": "deadbeef",
+        "installation_id": "install_1",
+        "supported_capabilities": [
+          "sealed-inner-v1"
+        ],
+        "requested_roles": [
+          "lead"
+        ]
+      }
+    },
+    {
+      "id": "hello-contract-version-zero",
+      "expected": "unsupported_version",
+      "refusal": "schema",
+      "note": "T14: a version outside the supported window is refused explicitly.",
+      "data": {
+        "contract_version": 0,
+        "request_id": "request_1",
+        "soul_id": "agent_example",
+        "definition_digest": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "installation_id": "install_1",
+        "supported_capabilities": [
+          "sealed-inner-v1"
+        ],
+        "requested_roles": [
+          "lead"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "record": "task-record",
+  "contract": "task/v1",
+  "schema": "../schemas/broker/task-record.schema.json",
+  "vectors": [
+    {
+      "id": "task-offered",
+      "expected": "valid",
+      "data": {
+        "task_id": "task_17",
+        "requester": "principal:chris",
+        "accountable_soul": "agent_example",
+        "objective": "Investigate the seeded issue, implement a repair in the designated workspace, run the approved checks, and prepare a reviewable change.",
+        "done_criteria": "approved checks pass and a reviewable change exists in workspace:scratch",
+        "grant_reference": "grant_7",
+        "write_scope": [
+          "workspace:scratch"
+        ],
+        "revision": 6,
+        "status": "offered",
+        "budget": 5,
+        "deadline": "2026-11-09T00:00:00Z",
+        "evidence": []
+      },
+      "canonical_sha256": "baa15e6edb0612a16b0d5da116112460e6e2a08a22359a90ed290e212dd16386"
+    },
+    {
+      "id": "task-waiting-credential-unavailable",
+      "expected": "valid",
+      "data": {
+        "task_id": "task_18",
+        "requester": "principal:chris",
+        "accountable_soul": "agent_example",
+        "objective": "Publish the reviewed change to the service.",
+        "done_criteria": "service write receipt exists with a settled outcome",
+        "write_scope": [
+          "workspace:scratch"
+        ],
+        "revision": 7,
+        "status": "waiting",
+        "waiting_reason": "credential_unavailable",
+        "budget": 5,
+        "evidence": [
+          "receipt_56"
+        ]
+      },
+      "canonical_sha256": "dc1eddfbd7a362c1cb0b577eebf36b7ff04f968fa319ccd77acff0a3c8ae2d55"
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "record": "grant-record",
+  "companion": "negatives",
+  "base": {
+    "file": "grant-record-v1.json",
+    "sha256": "60991fab93510a5655ff9b75d93faf72ea6f4d6de93a00cdcd35669df7a61c19"
+  },
+  "vectors": [
+    {
+      "id": "grant-unscoped",
+      "expected": "caller_mismatch",
+      "refusal": "schema",
+      "note": "A grant scoped to neither a member nor a role has no legitimate caller; the record must name its scope.",
+      "data": {
+        "grant_id": "grant_9",
+        "issuer": "principal:chris",
+        "principal": "principal:chris",
+        "soul_id": "agent_example",
+        "member_or_role": {},
+        "epoch": 4,
+        "actions": [
+          "edit"
+        ],
+        "resources": [
+          "workspace:scratch"
+        ],
+        "allowed_destinations": [
+          "inference:primary"
+        ],
+        "data_restrictions": {},
+        "budget": 5,
+        "expiry": "2026-11-08T00:00:00Z",
+        "revocation_version": 0
+      }
+    },
+    {
+      "id": "grant-negative-budget",
+      "expected": "budget_exhausted",
+      "refusal": "schema",
+      "note": "Budgets are non-negative ceilings; a negative budget is incoherent.",
+      "data": {
+        "grant_id": "grant_10",
+        "issuer": "principal:chris",
+        "principal": "principal:chris",
+        "soul_id": "agent_example",
+        "member_or_role": {
+          "role": "lead"
+        },
+        "epoch": 4,
+        "actions": [
+          "edit"
+        ],
+        "resources": [
+          "workspace:scratch"
+        ],
+        "allowed_destinations": [
+          "inference:primary"
+        ],
+        "data_restrictions": {},
+        "budget": -1,
+        "expiry": "2026-11-08T00:00:00Z",
+        "revocation_version": 0
+      }
+    }
+  ]
+}

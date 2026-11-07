@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "record": "task-commitment",
+  "contract": "task/v1",
+  "schema": "../schemas/broker/task-commitment.schema.json",
+  "vectors": [
+    {
+      "id": "commit-complete",
+      "expected": "valid",
+      "data": {
+        "contract": "task/v1",
+        "request_id": "request_91",
+        "task_id": "task_17",
+        "expected_revision": 6,
+        "installation_epoch": 4,
+        "runtime_id": "runtime_lead_8",
+        "lease_generation": 3,
+        "operation_id": "operation_finish_17",
+        "transition": "completed",
+        "result_ref": "artifact_42",
+        "evidence_refs": [
+          "receipt_56",
+          "check_12"
+        ]
+      },
+      "canonical_sha256": "f70ff5ac6fdfbc7cc36139ec37d29a8b51839e49205e2f52db3ebdb04726c9ed"
+    }
+  ]
+}

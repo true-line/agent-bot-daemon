@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "record": "dream-grant-record",
+  "companion": "negatives",
+  "base": {
+    "file": "dream-grant-record-v1.json",
+    "sha256": "7996054b918a1ac6b16ff902e6080cbbfb0b6aabf588c26d8fde5c32db3653a2"
+  },
+  "vectors": [
+    {
+      "id": "dream-writes-primitives",
+      "expected": "write_scope_conflict",
+      "refusal": "schema",
+      "note": "A dream run never writes primitives/, SoulInfo.json, SoulLock.json, or comms/ (0.4 §10, T29); the writable-path pattern refuses those roots.",
+      "data": {
+        "grant_id": "dream_grant_3",
+        "soul_id": "agent_example",
+        "run_id": "run_2026_11_08",
+        "runtime_binding": "runtime_dream_1",
+        "readable_paths": [
+          "dreams/inputs/",
+          "memorial/"
+        ],
+        "writable_paths": [
+          "primitives/persona/"
+        ],
+        "approved_destinations": [
+          "inference:primary"
+        ],
+        "maintenance_share": 0.2,
+        "wall_clock_limit_seconds": 7200,
+        "cell_cap": 6,
+        "expiry": "2026-11-08T14:00:00Z"
+      }
+    },
+    {
+      "id": "dream-zero-wall-clock",
+      "expected": "dream_limit_exceeded",
+      "refusal": "schema",
+      "note": "A dream grant without a positive wall-clock limit has no bound to enforce (T29).",
+      "data": {
+        "grant_id": "dream_grant_4",
+        "soul_id": "agent_example",
+        "run_id": "run_2026_11_08",
+        "runtime_binding": "runtime_dream_1",
+        "readable_paths": [
+          "dreams/inputs/"
+        ],
+        "writable_paths": [
+          "dreams/runs/run_2026_11_08/"
+        ],
+        "approved_destinations": [
+          "inference:primary"
+        ],
+        "maintenance_share": 0.2,
+        "wall_clock_limit_seconds": 0,
+        "cell_cap": 6,
+        "expiry": "2026-11-08T14:00:00Z"
+      }
+    }
+  ]
+}

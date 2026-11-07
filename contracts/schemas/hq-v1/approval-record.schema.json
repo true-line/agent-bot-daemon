@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hq/v1 Approval record",
+  "description": "0.4 Appendix A: approval ID, owner session reference, digest of the proposed action or policy change, scope, expiry, HQ signature. Any change to the proposed action invalidates it (T24). Nothing a member writes can produce one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "approval_id",
+    "owner_session_reference",
+    "action_digest",
+    "scope",
+    "expiry",
+    "hq_signature"
+  ],
+  "properties": {
+    "approval_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "owner_session_reference": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "action_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "action", "resource"],
+      "properties": {
+        "class": { "type": "string", "enum": ["single-action", "bounded-class"] },
+        "action": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "resource": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "data_destination": { "type": "string", "maxLength": 256 },
+        "expected_cost": { "type": "number", "minimum": 0 }
+      }
+    },
+    "expiry": { "type": "string", "format": "date-time" },
+    "hq_signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]{16,512}$" }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "record": "task-commitment",
+  "companion": "negatives",
+  "base": {
+    "file": "task-commitment-v1.json",
+    "sha256": "35be2922fa66cd69c4179abd5dec1006d837b2da927c9f1d2b0844d244426248"
+  },
+  "vectors": [
+    {
+      "id": "commit-illustrative-verb",
+      "expected": "unsupported_version",
+      "refusal": "schema",
+      "note": "The Appendix A illustrative example uses the verb 'complete'; the contract enumerates the §7 state names, so 'completed' is the valid value. See contracts/README.md curation notes.",
+      "data": {
+        "contract": "task/v1",
+        "request_id": "request_92",
+        "task_id": "task_17",
+        "expected_revision": 6,
+        "installation_epoch": 4,
+        "runtime_id": "runtime_lead_8",
+        "lease_generation": 3,
+        "operation_id": "operation_finish_17",
+        "transition": "complete"
+      }
+    },
+    {
+      "id": "commit-missing-operation-id",
+      "expected": "revision_conflict",
+      "refusal": "schema",
+      "note": "Repeated requests return the same transition receipt only because the operation key deduplicates them (0.4 §7); a commitment without one cannot be made idempotent.",
+      "data": {
+        "contract": "task/v1",
+        "request_id": "request_93",
+        "task_id": "task_17",
+        "expected_revision": 6,
+        "installation_epoch": 4,
+        "runtime_id": "runtime_lead_8",
+        "lease_generation": 3,
+        "transition": "completed"
+      }
+    }
+  ]
+}

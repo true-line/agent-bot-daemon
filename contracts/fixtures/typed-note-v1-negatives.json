@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "record": "typed-note",
+  "companion": "negatives",
+  "base": {
+    "file": "typed-note-v1.json",
+    "sha256": "194e966f7c65abcd81fc5d4a02d14e5b7be65f1e0827aab2bbfd216c54e464db"
+  },
+  "vectors": [
+    {
+      "id": "note-empty-body",
+      "expected": "evidence_missing",
+      "refusal": "schema",
+      "note": "An empty note carries no recordable content; notes are self-reported and must state something to be kept or consolidated.",
+      "data": {
+        "note_id": "note_90",
+        "type": "finding",
+        "member_id": "specialist_1",
+        "runtime_id": "runtime_spec_2",
+        "timestamp": "2026-11-07T09:10:00Z",
+        "provenance": [
+          "member"
+        ],
+        "body": ""
+      }
+    }
+  ]
+}

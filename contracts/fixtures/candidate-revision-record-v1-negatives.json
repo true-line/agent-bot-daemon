@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "record": "candidate-revision-record",
+  "companion": "negatives",
+  "base": {
+    "file": "candidate-revision-record-v1.json",
+    "sha256": "f530d25ea0c00c93e68a7be74358ae711e5b6aa61475a2dafa94ede113b7ec14"
+  },
+  "vectors": [
+    {
+      "id": "candidate-partial-accept-status",
+      "expected": "candidate_rejected",
+      "refusal": "schema",
+      "note": "Partial acceptance is disallowed in the MVP (T28); the status enumeration has no value for it and unknown statuses are refused.",
+      "data": {
+        "candidate_id": "candidate_4",
+        "parent_revision_digest": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "candidate_digest": "192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708",
+        "changes": [
+          {
+            "path": "primitives/standing-instructions/",
+            "class": "skill",
+            "rationale": "Narrowed candidate for the passing adapter only.",
+            "provenance": [
+              "member"
+            ]
+          }
+        ],
+        "eval_matrix": [
+          {
+            "role": "lead",
+            "adapter_version": "1.2.0",
+            "outcome": "pass"
+          }
+        ],
+        "status": "partially accepted"
+      }
+    },
+    {
+      "id": "candidate-change-without-provenance",
+      "expected": "source_chain_unapproved",
+      "refusal": "schema",
+      "note": "Without a provenance set the source chain cannot be checked (T30); a change derived from external-untrusted content must carry that label.",
+      "data": {
+        "candidate_id": "candidate_5",
+        "parent_revision_digest": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "candidate_digest": "2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70819",
+        "changes": [
+          {
+            "path": "primitives/tool-guidance/",
+            "class": "tool_guidance",
+            "rationale": "Workaround learned from a downloaded document.",
+            "evidence_references": [
+              "note_89"
+            ]
+          }
+        ],
+        "eval_matrix": [
+          {
+            "role": "lead",
+            "adapter_version": "1.2.0",
+            "outcome": "pass"
+          }
+        ],
+        "status": "proposed"
+      }
+    }
+  ]
+}

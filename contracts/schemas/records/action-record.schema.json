@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Action record",
+  "description": "0.4 §7 and Appendix A: operation ID, stable idempotency key, caller, task, expected revision, grant reference, request digest, state, remote reference, resolver (service lookup or owner session), outcome and receipt IDs. The broker writes a durable action intent before sending; a crash after remote acceptance but before local persistence is a reconciliation case, never a blind replay (T06).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "operation_id",
+    "idempotency_key",
+    "caller",
+    "task_id",
+    "expected_revision",
+    "request_digest",
+    "state"
+  ],
+  "properties": {
+    "operation_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "idempotency_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{16,128}$" },
+    "caller": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "task_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "expected_revision": { "type": "integer", "minimum": 0 },
+    "grant_reference": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "request_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "state": { "type": "string", "enum": ["prepared", "submitted", "succeeded", "rejected", "unknown"] },
+    "remote_reference": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "resolver": { "type": "string", "enum": ["service_lookup", "owner_session"] },
+    "outcome": { "type": "string", "maxLength": 64 },
+    "receipt_ids": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" }
+    }
+  }
+}

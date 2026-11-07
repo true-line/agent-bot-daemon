@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task record",
+  "description": "0.4 §7 and Appendix A: task ID, parent or peer reference, requester, accountable Soul, objective, done criteria, grant reference, restrictions, write scope, revision, status, waiting reason, budget, deadline, evidence, lease generation. Authoritative task state lives in HQ's store; the Soul's comms/ area holds a mirror.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "requester",
+    "accountable_soul",
+    "objective",
+    "done_criteria",
+    "revision",
+    "status"
+  ],
+  "properties": {
+    "task_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "parent_or_peer_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "parent_task_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+        "peer_soul_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+        "peer_task_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" }
+      }
+    },
+    "requester": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "accountable_soul": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "objective": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "done_criteria": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "grant_reference": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "restrictions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "labels": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 64 } },
+        "notes": { "type": "string", "maxLength": 512 }
+      }
+    },
+    "write_scope": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "revision": { "type": "integer", "minimum": 0 },
+    "status": {
+      "type": "string",
+      "enum": [
+        "offered",
+        "accepted",
+        "running",
+        "waiting",
+        "reconciling",
+        "completed",
+        "failed",
+        "canceled",
+        "expired"
+      ]
+    },
+    "waiting_reason": {
+      "type": "string",
+      "enum": [
+        "owner_input",
+        "owner_pause",
+        "dependency",
+        "provider_availability",
+        "credential_unavailable",
+        "reconciliation_decision"
+      ]
+    },
+    "budget": { "type": "number", "minimum": 0 },
+    "deadline": { "type": "string", "format": "date-time" },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" }
+    },
+    "lease_generation": { "type": "integer", "minimum": 1 }
+  },
+  "if": {
+    "required": ["status"],
+    "properties": { "status": { "const": "waiting" } }
+  },
+  "then": {
+    "required": ["waiting_reason"]
+  }
+}

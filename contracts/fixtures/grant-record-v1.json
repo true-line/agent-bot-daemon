@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "record": "grant-record",
+  "contract": "broker",
+  "schema": "../schemas/broker/grant-record.schema.json",
+  "vectors": [
+    {
+      "id": "grant-edit-scratch",
+      "expected": "valid",
+      "data": {
+        "grant_id": "grant_7",
+        "issuer": "principal:chris",
+        "principal": "principal:chris",
+        "soul_id": "agent_example",
+        "member_or_role": {
+          "role": "lead"
+        },
+        "epoch": 4,
+        "actions": [
+          "edit"
+        ],
+        "resources": [
+          "workspace:scratch"
+        ],
+        "allowed_destinations": [
+          "inference:primary"
+        ],
+        "data_restrictions": {
+          "labels": [
+            "confidential"
+          ]
+        },
+        "budget": 5,
+        "expiry": "2026-11-08T00:00:00Z",
+        "revocation_version": 0
+      },
+      "canonical_sha256": "1ee4987afa22526a1de17de0716f4d8fff5528f9b389f174a3d79c26d35057f4"
+    },
+    {
+      "id": "grant-scoped-to-member",
+      "expected": "valid",
+      "data": {
+        "grant_id": "grant_8",
+        "issuer": "principal:chris",
+        "principal": "principal:chris",
+        "soul_id": "agent_example",
+        "member_or_role": {
+          "member_id": "specialist_1"
+        },
+        "runtime_binding": "runtime_spec_2",
+        "epoch": 4,
+        "actions": [
+          "read"
+        ],
+        "resources": [
+          "workspace:scratch"
+        ],
+        "allowed_destinations": [],
+        "data_restrictions": {},
+        "budget": 1,
+        "expiry": "2026-11-08T00:00:00Z",
+        "revocation_version": 0
+      },
+      "canonical_sha256": "3e2a6579a47a526e8f0ea73e5f3f77e61006f0f59a9945daaa875afc023103fe"
+    }
+  ]
+}

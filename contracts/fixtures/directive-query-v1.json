@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "record": "directive-query",
+  "contract": "broker",
+  "schema": "../schemas/broker/directive-query.schema.json",
+  "vectors": [
+    {
+      "id": "query-which-binding-applies",
+      "expected": "valid",
+      "data": {
+        "message_id": "message_61",
+        "issuer": {
+          "principal": "member",
+          "member_id": "specialist_1",
+          "runtime_id": "runtime_spec_2"
+        },
+        "recipient": "hq",
+        "kind": "query",
+        "task_or_decision_reference": {
+          "task_id": "task_17"
+        },
+        "expiry": "2026-11-08T18:00:00Z",
+        "payload": {
+          "question": "which binding applies"
+        }
+      },
+      "canonical_sha256": "55ae8cdcf306120cf56095133431e09a8011ff0c0b3f2297ff5dad1cea48a788"
+    },
+    {
+      "id": "directive-from-owner",
+      "expected": "valid",
+      "data": {
+        "message_id": "message_62",
+        "issuer": {
+          "principal": "owner"
+        },
+        "recipient": "agent_example",
+        "kind": "directive",
+        "policy_or_grant_reference": {
+          "grant_id": "grant_7"
+        },
+        "expiry": "2026-11-08T18:00:00Z",
+        "payload": {
+          "objective": "investigate the seeded issue"
+        }
+      },
+      "canonical_sha256": "e3a4fdfb6b2593c36a40e4e237acf044df2e4794ef917e79f8da873c5c93ccf3"
+    }
+  ]
+}

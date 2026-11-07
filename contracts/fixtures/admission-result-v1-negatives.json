@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "record": "admission-result",
+  "companion": "negatives",
+  "base": {
+    "file": "admission-result-v1.json",
+    "sha256": "9c5c5c88801d62286fa66765478d94a17f7fd1a180b8c66329d5502a6afcc1c1"
+  },
+  "vectors": [
+    {
+      "id": "admission-unknown-profile",
+      "expected": "profile_insufficient",
+      "refusal": "schema",
+      "note": "R8: every profile report names the profile actually in force. A label outside the §4 enumeration can never be honestly reported, so it is refused.",
+      "data": {
+        "installation_epoch": 4,
+        "admitted_runtime_ids": [
+          "runtime_lead_8"
+        ],
+        "negotiated_versions": {
+          "hq-v1": 1
+        },
+        "channel_bindings": [
+          {
+            "channel": "broker",
+            "binding": "bind_lead_0000000001"
+          }
+        ],
+        "profile": "protected",
+        "lease_expiry": "2026-11-07T12:00:00Z",
+        "decision_id": "decision_9"
+      }
+    },
+    {
+      "id": "admission-negative-epoch",
+      "expected": "stale_epoch",
+      "refusal": "schema",
+      "note": "Installation epochs are non-negative and monotonically advancing; a negative epoch is stale by definition.",
+      "data": {
+        "installation_epoch": -1,
+        "admitted_runtime_ids": [
+          "runtime_lead_8"
+        ],
+        "negotiated_versions": {
+          "hq-v1": 1
+        },
+        "channel_bindings": [
+          {
+            "channel": "broker",
+            "binding": "bind_lead_0000000001"
+          }
+        ],
+        "profile": "managed-protected",
+        "lease_expiry": "2026-11-07T12:00:00Z",
+        "decision_id": "decision_9"
+      }
+    }
+  ]
+}

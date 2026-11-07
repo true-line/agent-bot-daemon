@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "task/v1 commitment request",
+  "description": "0.4 Appendix A illustrative task commitment request, normalized to the §7 state machine (see contracts/README.md curation notes). HQ derives the caller from the protected connection, validates criteria, unresolved action ledger, current lease, epoch, revision, and authority, then commits atomically or returns a typed refusal. A repeated operation ID with changed content is a conflict.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "request_id",
+    "task_id",
+    "expected_revision",
+    "installation_epoch",
+    "runtime_id",
+    "lease_generation",
+    "operation_id",
+    "transition"
+  ],
+  "properties": {
+    "contract": { "const": "task/v1" },
+    "request_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "task_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "expected_revision": { "type": "integer", "minimum": 0 },
+    "installation_epoch": { "type": "integer", "minimum": 0 },
+    "runtime_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "lease_generation": { "type": "integer", "minimum": 1 },
+    "operation_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "transition": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "running",
+        "waiting",
+        "reconciling",
+        "completed",
+        "failed",
+        "canceled"
+      ]
+    },
+    "result_ref": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" },
+    "evidence_refs": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$" }
+    }
+  }
+}

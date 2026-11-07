@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "record": "lifecycle-request",
+  "contract": "hq/v1",
+  "schema": "../schemas/hq-v1/lifecycle-request.schema.json",
+  "vectors": [
+    {
+      "id": "lifecycle-pause",
+      "expected": "valid",
+      "data": {
+        "request_id": "request_77",
+        "operation": "pause",
+        "target_installation_id": "install_1",
+        "expected_state_revision": 12,
+        "reason": "owner halted background work at a safe point",
+        "owner_session_reference": "session_owner_1"
+      },
+      "canonical_sha256": "c87c876c824dc1eed15be99539ebf4c00486852dbadd0546f63f3dfc78199023"
+    },
+    {
+      "id": "lifecycle-accept-revision-with-deadline",
+      "expected": "valid",
+      "data": {
+        "request_id": "request_78",
+        "operation": "accept-revision",
+        "target_installation_id": "install_1",
+        "expected_state_revision": 13,
+        "reason": "owner accepts candidate_3 digest after review",
+        "deadline": "2026-11-08T00:00:00Z",
+        "owner_session_reference": "session_owner_1"
+      },
+      "canonical_sha256": "4a8eb1617b719b58919336bc652609f3a41200bb34bb080f54e07d18fe4826b6"
+    }
+  ]
+}
