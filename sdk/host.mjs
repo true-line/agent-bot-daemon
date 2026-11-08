@@ -12,6 +12,7 @@
 // real HQ (§9 PR 12) runs the same host on its store, control socket and
 // signer. Plugins add no trust boundary: they all run in HQ's trust domain,
 // which is why the host, not the plugin, owns dispatch and auth.
+import { validateCommand, validateTool } from './declarations.mjs';
 import { fail, HostError } from './errors.mjs';
 import { HQ_OPERATIONS, SAFE_MODE_OPERATIONS, ADMISSION_OPERATIONS } from './operations.mjs';
 import { HOST_API, supportedHostApis, validateManifest } from './plugin.mjs';
@@ -125,9 +126,12 @@ export function createHost({
   function register(registry, plugin, key, value, label, lease) {
     if (!lease.live) fail('host.context_revoked', `${plugin}: this context is no longer live (${lease.why})`);
     if (core.phases.get(plugin) !== 'init') fail('host.registration_closed', `${plugin}: ${label} registration is only allowed during init`);
+    // A name has one registration. The same plugin registering it twice is
+    // refused too: a re-init starts from cleared registrations, so a second
+    // call within one init is a mistake, not a replacement (#94).
     const owner = registry.get(key);
-    if (owner && owner.plugin !== plugin) fail('host.duplicate_registration', `${label} ${key} is already registered by ${owner.plugin}`, { key, owner: owner.plugin });
-    registry.set(key, { ...value, plugin }); // the same plugin re-registering replaces its entry
+    if (owner) fail('host.duplicate_registration', `${label} ${key} is already registered by ${owner.plugin}`, { key, owner: owner.plugin });
+    registry.set(key, { ...value, plugin });
   }
 
   function makeContext(p, lease) {
@@ -165,8 +169,11 @@ export function createHost({
           register(registries.adapters, name, id, { id, class: cls, validate, call, lookup }, 'adapter', lease);
         },
       }),
-      tools: Object.freeze({ register(tool = {}) { str(tool.name, 'tool name'); register(registries.tools, name, tool.name, { tool }, 'tool', lease); } }),
-      commands: Object.freeze({ register(cmd = {}) { str(cmd.name, 'command name'); register(registries.commands, name, cmd.name, { cmd }, 'command', lease); } }),
+      // Member surfaces (§4.2.1, §4.2.2): the whole declaration is checked
+      // before the lease and phase, so a malformed one is refused the same
+      // way at any time.
+      tools: Object.freeze({ register(tool) { const t = validateTool(name, tool); register(registries.tools, name, t.name, { tool: t }, 'tool', lease); } }),
+      commands: Object.freeze({ register(cmd) { const c = validateCommand(name, cmd); register(registries.commands, name, c.name, { cmd: c }, 'command', lease); } }),
       hooks: Object.freeze({
         register(hook = {}) {
           str(hook.name, 'hook name');

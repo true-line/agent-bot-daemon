@@ -57,8 +57,8 @@ test('identity is HQ core: device status and enrollment are core operations no p
       for (const op of ['status', 'device.status', 'device.enroll']) {
         try { ctx.hq.register({ op, auth: 'owner', handler() {} }); tried[op] = 'ok'; } catch (e) { tried[op] = e.code; }
       }
-      ctx.tools.register({ name: 'gh' });
-      ctx.commands.register({ name: 'whoami' });
+      ctx.tools.register({ name: 'gh', description: 'A tool.', inputSchema: { type: 'object' }, class: 'read', handler() {} });
+      ctx.commands.register({ name: 'whoami', visibility: 'public', module: 'cli/whoami.mjs' });
       ctx.hooks.register({ name: 'pre-commit', handler() {} });
     },
   });
@@ -223,7 +223,7 @@ test('registration rules: hq/v1 operations only, matching auth, core-owned statu
       tryReg('status', () => ctx.hq.register({ op: 'status', auth: 'owner', handler() {} }));
       tryReg('no handler', () => ctx.hq.register({ op: 'tasks.get', auth: 'owner' }));
       tryReg('first', () => ctx.hq.register({ op: 'tasks.list', auth: 'owner', handler: () => 'first' }));
-      tryReg('replace own', () => ctx.hq.register({ op: 'tasks.list', auth: 'owner', handler: () => 'second' }));
+      tryReg('again own', () => ctx.hq.register({ op: 'tasks.list', auth: 'owner', handler: () => 'second' }));
       tryReg('kind', () => ctx.broker.registerKind({ kind: 'notices.take', consume() {} }));
       tryReg('bad adapter', () => ctx.broker.registerAdapter({ id: 'gh', class: 'exec', validate() {}, call() {} }));
       tryReg('adapter', () => ctx.broker.registerAdapter({ id: 'gh', class: 'service', validate() {}, call() {} }));
@@ -235,10 +235,10 @@ test('registration rules: hq/v1 operations only, matching auth, core-owned statu
   await host.start();
   assert.deepEqual(attempts, {
     'unknown op': 'host.unknown_operation', 'wrong auth': 'host.auth_mismatch', status: 'host.duplicate_registration',
-    'no handler': 'host.invalid_request', first: 'ok', 'replace own': 'ok', kind: 'ok', 'bad adapter': 'host.invalid_request', adapter: 'ok',
+    'no handler': 'host.invalid_request', first: 'ok', 'again own': 'host.duplicate_registration', kind: 'ok', 'bad adapter': 'host.invalid_request', adapter: 'ok',
   });
   assert.match(stateOf(host, 'plugin-b').reason, /host.duplicate_registration: operation tasks.list is already registered by plugin-a/);
-  assert.equal(await host.dispatch('tasks.list', { auth: 'owner' }), 'second');
+  assert.equal(await host.dispatch('tasks.list', { auth: 'owner' }), 'first');
   assert.throws(() => late.hq.register({ op: 'tasks.get', auth: 'owner', handler() {} }), code('host.registration_closed'));
   const regs = host.registrations();
   assert.deepEqual(regs.hq.filter((r) => r.plugin === 'plugin-a'), [{ key: 'tasks.list', auth: 'owner', plugin: 'plugin-a' }]);
@@ -499,7 +499,7 @@ test('a timed-out init keeps running in the background but can no longer touch h
         for (const [what, fn] of Object.entries({
           tx: () => ctx.services.store.tx((tx) => tx.put('grants', 'g1', {})),
           receipt: () => ctx.services.receipts.append({ kind: 'late' }),
-          register: async () => ctx.tools.register({ name: 'late-tool' }),
+          register: async () => ctx.tools.register({ name: 'late_tool', description: 'A tool.', inputSchema: { type: 'object' }, class: 'read', handler() {} }),
         })) {
           try { await fn(); late[what] = 'ok'; } catch (e) { late[what] = e.code; }
         }

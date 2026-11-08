@@ -34,7 +34,7 @@ test('a well-behaved plugin passes every check', async () => {
 
 test('registrations that change on re-init fail idempotent registration', async () => {
   let n = 0;
-  const r = await checkPlugin(plugin({ async init(ctx) { n++; ctx.tools.register({ name: `tool-${n}` }); } }));
+  const r = await checkPlugin(plugin({ async init(ctx) { n++; ctx.tools.register({ name: `tool_${n}`, description: 'A tool.', inputSchema: { type: 'object' }, class: 'read', handler() {} }); } }));
   assert.ok(failed(r).includes('idempotent registration'));
 });
 
@@ -63,10 +63,10 @@ test('a plugin that writes under HOME or TMPDIR fails no writes outside the stor
 });
 
 test('a name clash or a refused registration fails unique names', async () => {
-  const clash = await checkPlugin(plugin({}), { deps: [definePlugin({ name: 'other', version: '1.0.0', hostApi: 1, async init(ctx) { ctx.commands.register({ name: 'doctor' }); } })] , hostOptions: {} });
+  const clash = await checkPlugin(plugin({}), { deps: [definePlugin({ name: 'other', version: '1.0.0', hostApi: 1, async init(ctx) { ctx.commands.register({ name: 'doctor', visibility: 'public', module: 'cli/doctor.mjs' }); } })] , hostOptions: {} });
   assert.deepEqual(failed(clash), []);
-  const dup = await checkPlugin(plugin({ async init(ctx) { ctx.commands.register({ name: 'doctor' }); } }), {
-    deps: [definePlugin({ name: 'other', version: '1.0.0', hostApi: 1, async init(ctx) { ctx.commands.register({ name: 'doctor' }); } })],
+  const dup = await checkPlugin(plugin({ async init(ctx) { ctx.commands.register({ name: 'doctor', visibility: 'public', module: 'cli/doctor.mjs' }); } }), {
+    deps: [definePlugin({ name: 'other', version: '1.0.0', hostApi: 1, async init(ctx) { ctx.commands.register({ name: 'doctor', visibility: 'public', module: 'cli/doctor.mjs' }); } })],
   });
   assert.ok(failed(dup).includes('unique names'));
   const self = await checkPlugin(plugin({}), { deps: [plugin({})] });
