@@ -44,7 +44,7 @@ export function fakeLegacy({ device = 'enrolled', daemon = 'running' } = {}) {
   return { state, run };
 }
 
-export async function startHQ({ device = 'enrolled', daemon = 'running', supervise = false, config, home = tempHome(), plugins, account = 'user', platform = 'darwin' } = {}) {
+export async function startHQ({ device = 'enrolled', daemon = 'running', supervise = false, config, home = tempHome(), plugins, pluginsDir, pins, devPlugins, account = 'user', platform = 'darwin' } = {}) {
   const legacy = fakeLegacy({ device, daemon });
   const clock = testClock(Date.UTC(2026, 10, 8));
   const hq = createHQ({
@@ -57,6 +57,9 @@ export async function startHQ({ device = 'enrolled', daemon = 'running', supervi
     account,
     platform,
     plugins,
+    pluginsDir,
+    pins,
+    devPlugins,
   });
   const status = await hq.start();
   await hq.settled();

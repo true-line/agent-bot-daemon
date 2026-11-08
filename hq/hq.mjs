@@ -31,7 +31,8 @@ import { createCore, pushReceipt, revokeDevice } from '../sdk/services.mjs';
 import { admissionPlugin } from './admission.mjs';
 import { legacyDaemon, legacySigner } from './legacy.mjs';
 import { detectProfile } from './profile.mjs';
-import { listenSocket } from './socket.mjs';
+import { loadPlugins } from './plugins.mjs';
+import { checkSocketPath, listenSocket } from './socket.mjs';
 import { coreTable, CORE_PLUGIN, ensurePrivateDir, openStore } from './store.mjs';
 
 export const HQ_VERSION = '0.1.0';
@@ -91,7 +92,10 @@ export function createHQ({
   platform = process.platform,
   account = userInfo().username,
   uid = process.getuid?.(),
-  plugins = [],
+  plugins = [],                  // plugin objects (tests); installed ones come from pluginsDir
+  pluginsDir,                    // installed plugins, each checked against `pins` (§4.5)
+  pins = { plugins: [] },        // governance/plugins.json
+  devPlugins,                    // --dev-plugins: loaded without pins, always reported
   initTimeoutMs,
   stopDeadlineMs,
 } = {}) {
@@ -107,6 +111,7 @@ export function createHQ({
   let legacyRunner = legacy;
   let running = false;
   let firstTick = Promise.resolve();
+  let pluginLoad = [];
 
   const paths = { home, control: join(home, 'control.sock'), admission: join(home, 'admission.sock') };
 
@@ -143,6 +148,7 @@ export function createHQ({
     profileInfo = detectProfile({ platform, account, standalone: cfg.standalone === true });
     legacyRunner ??= legacyDaemon({ supervise: cfg.legacy?.supervise === true, clock });
 
+    if (platform !== 'win32') for (const p of [paths.control, paths.admission]) checkSocketPath(p, platform);
     store = openStore(home, { uid });
     core = createCore({
       clock, random, signer,
@@ -155,8 +161,30 @@ export function createHQ({
     // Sessions left open by a crash are closed now; they cannot be live.
     for (const [id, s] of coreTable(core, 'sessions')) if (!s.closed_at) coreTable(core, 'sessions').set(id, { ...s, closed_at: clock.now(), closed_by: 'restart' });
 
+    // Installed plugins: digests checked against the pins before any plugin
+    // code runs. A refused plugin never reaches the host; status and a
+    // receipt say why.
+    const admission = admissionPlugin({ schemas, profileReasons: () => profileInfo.reasons });
+    const builtIn = [admission, ...plugins];
+    pluginLoad = [];
+    const accepted = [];
+    const taken = new Set([CORE_PLUGIN, ...builtIn.map((p) => p.name)]);
+    const available = Object.fromEntries(builtIn.map((p) => [p.name, p.version]));
+    for (const [dir, dev] of [[pluginsDir, false], [devPlugins, true]]) {
+      if (!dir) continue;
+      const out = await loadPlugins({ dir, pins, dev, available });
+      pluginLoad.push(...out.report);
+      for (const { plugin, entry } of out.loaded) {
+        if (taken.has(plugin.name)) { Object.assign(entry, { state: 'refused', reason: `the name ${plugin.name} is taken` }); continue; }
+        taken.add(plugin.name);
+        available[plugin.name] = plugin.version;
+        accepted.push(plugin);
+      }
+    }
+    for (const r of pluginLoad.filter((x) => x.state === 'refused')) await pushReceipt(core, { plugin: 'hq', kind: 'hq.plugin.refused', name: r.name, reason: r.reason });
+
     host = createHost({
-      plugins: [admissionPlugin({ schemas, profileReasons: () => profileInfo.reasons }), ...plugins],
+      plugins: [...builtIn, ...accepted],
       core,
       ...(initTimeoutMs ? { initTimeoutMs } : {}),
       ...(stopDeadlineMs ? { stopDeadlineMs } : {}),
@@ -167,6 +195,8 @@ export function createHQ({
           profileReasons: profileInfo.reasons,
           sockets: { control: paths.control, admission: paths.admission, access: 'file mode 0600 in a 0700 directory (no peer-credential check yet)' },
           ownerSessions: openOwnerSessions(),
+          pluginLoad,
+          ...(devPlugins ? { devPlugins } : {}),
         },
         legacy: legacyRunner.report(),
       }),

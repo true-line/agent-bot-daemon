@@ -1,6 +1,7 @@
 // HQ has no npm dependencies (§3.4 rule 5): hq/ imports node: built-ins, the
 // SDK and its own modules. Only the command line (main.mjs) reaches into
-// scripts/, to load the pinned soul-contracts schemas.
+// scripts/, to load the pinned soul-contracts schemas, and only the plugin
+// loader (plugins.mjs) imports dynamically.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -21,6 +22,7 @@ test('hq/ imports only node: built-ins, sdk/ and its own modules', () => {
       const allowed = [HQ + '/', join(ROOT, 'sdk') + '/', ...(f === 'main.mjs' ? [join(ROOT, 'scripts') + '/'] : [])];
       assert.ok(allowed.some((a) => target.startsWith(a)), `hq/${f} imports ${relative(ROOT, target)}`);
     }
-    assert.doesNotMatch(src, /\bimport\s*\(/, `hq/${f} uses a dynamic import`);
+    // Only the plugin loader imports dynamically, after its digest checks.
+    if (f !== 'plugins.mjs') assert.doesNotMatch(src, /\bimport\s*\(/, `hq/${f} uses a dynamic import`);
   }
 });

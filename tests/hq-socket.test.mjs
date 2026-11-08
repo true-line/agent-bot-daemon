@@ -3,11 +3,11 @@
 // refusal shapes, owner sessions in the store, and restart.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { validate } from '../sdk/wire/schema.mjs';
 import { createHQ } from '../hq/hq.mjs';
-import { MAX_LINE_BYTES } from '../hq/socket.mjs';
+import { checkSocketPath, MAX_LINE_BYTES } from '../hq/socket.mjs';
 import { errorResponseSchema, hello, schemas, startHQ, tempHome } from './hq-harness.mjs';
 
 test('status over the control socket reports managed-cooperative honestly, with reasons and the legacy daemon', async () => {
@@ -160,4 +160,17 @@ test('config is validated and must not be writable by others; no plugin may be c
     await assert.rejects(createHQ(base).start(), /writable by group or others/);
     assert.throws(() => createHQ({ ...base, plugins: [{ name: 'hq' }] }), /no plugin may be named hq/);
   } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('a socket path too long for sun_path is refused with a reason, before HQ writes anything', async () => {
+  assert.throws(() => checkSocketPath(`/${'x'.repeat(103)}`, 'darwin'), /allows 103/);
+  checkSocketPath(`/${'x'.repeat(102)}`, 'darwin');
+  checkSocketPath(`/${'x'.repeat(106)}`, 'linux');
+  assert.throws(() => checkSocketPath(`/${'x'.repeat(107)}`, 'linux'), /allows 107/);
+  const base = tempHome();
+  const home = join(base, 'h'.repeat(Math.max(1, 120 - base.length)));
+  try {
+    await assert.rejects(startHQ({ home }), /Choose a shorter --home/);
+    assert.equal(existsSync(join(home, 'store.json')), false);
+  } finally { rmSync(base, { recursive: true, force: true }); }
 });

@@ -47,8 +47,18 @@ function live(path) {
   });
 }
 
+// A Unix socket path must fit sun_path with its terminating NUL: 104 bytes
+// on macOS and the BSDs, 108 on Linux. Past that, listen fails with a bare
+// EINVAL, so HQ says what is wrong before it touches anything.
+export function checkSocketPath(path, platform = process.platform) {
+  const max = (platform === 'linux' ? 108 : 104) - 1;
+  const len = Buffer.byteLength(path);
+  if (len > max) throw new Error(`socket path ${path} is ${len} bytes; ${platform} allows ${max}. Choose a shorter --home`);
+}
+
 export async function listenSocket({ path, auth, dispatch, core, newSession, endSession }) {
   if (process.platform === 'win32') throw new Error('HQ on Windows needs a named pipe with an owner DACL, which is not built yet');
+  checkSocketPath(path);
   if (existsSync(path)) {
     if (!lstatSync(path).isSocket()) throw new Error(`${path} exists and is not a socket; refusing to replace it`);
     if (await live(path)) throw new Error(`another HQ is listening on ${path}`);

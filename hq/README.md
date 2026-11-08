@@ -7,6 +7,8 @@ beside the existing per-account daemon, which it leaves unchanged
 
 ```sh
 node hq/main.mjs run      # foreground; state in $AGENT_BOT_HQ_HOME or ~/.agent-bot-hq
+node hq/main.mjs run --plugins DIR       # also load installed plugins, pinned
+node hq/main.mjs run --dev-plugins DIR   # load unpinned plugins; status says so
 node hq/main.mjs status   # ask the running HQ, over the control socket
 node hq/main.mjs souls    # admitted Souls and their runtimes
 ```
@@ -21,6 +23,7 @@ node hq/main.mjs souls    # admitted Souls and their runtimes
 | Profile reporting: the profile in force, with the reasons a stronger one is not. Never `managed-protected` before §9 PR 16. | `profile.mjs` | §3.3, R8 |
 | hq/v1 Hello (with the admission result), Admit, Equip, Ready and Lease, checked against the pinned schemas in both directions. Versions are N/N−1 (T14). The owner's config holds the accepted definitions, there is one current installation epoch per Soul (T15), and leases have generations and renewal sequences. Runtimes are bound to the admitting connection. | `admission.mjs` | §4.2, 0.4 §5 |
 | Bootstrap per §4.4 through the SDK host. Device status comes from the legacy enrollment, so an unenrolled device or an unreadable signer is safe mode, and a revoked device is `device_revoked`. With no identity-service link yet, credentials refuse with `credential_unavailable`. | `hq.mjs`, `legacy.mjs` | §4.4, §4.7 |
+| Installed plugins: one directory per plugin, with `plugin.json` (static fields) and `plugin.mjs`. Before any plugin code runs, the tree's sha256-manifest-v1 digest must match its pin in [`governance/plugins.json`](../governance/plugins.json), and the set must resolve from `plugin.json` alone. The code's `definePlugin` fields must then equal `plugin.json`. Symlinks are refused. A refused plugin gets a `hq.plugin.refused` receipt and a reason in status, and its dependents are refused with it. `--dev-plugins` skips the pin and status always names it. Core names (`hq`, `hq-admission`) cannot be taken. | `plugins.mjs` | §4.1, §4.5 |
 | The existing daemon is probed and reported. It is started only when `legacy.supervise` is on, and never stopped. | `legacy.mjs` | §8.2 |
 
 ## State directory
@@ -55,8 +58,8 @@ peer-credential check must replace the file mode.
 
 ## Not in this slice
 
-- Discover and load from disk, the `governance/plugins.json` digest check
-  and `--dev-plugins` (§4.5). HQ loads its built-in plugin set.
+- Signed plugin packages and plugin upgrade. The pins file is the only
+  trust anchor, and changing it is a reviewed change to this repository.
 - The real signer and enrollment (§9 PR 15), the identity-service link (PRs
   10 and 18), grants and credential references in Equip (PRs 18 and 21), and
   `accept-revision` (PR 21).
