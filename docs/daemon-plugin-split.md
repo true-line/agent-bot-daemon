@@ -396,6 +396,57 @@ the set has resolved and every digest matches (§4.5).
 There is no remote RPC registration. No component outside the host can
 invoke a plugin (R2).
 
+Every registration is refused once `init` returns (`host.registration_closed`),
+and a key has one registration: a second one is `host.duplicate_registration`,
+whether it comes from another plugin or the same one. A re-init starts from
+cleared registrations, so it is not a duplicate.
+
+#### 4.2.1 Tool declaration
+
+`ctx.tools.register(tool)` takes exactly these fields. An unknown field, a
+missing required one, or a value of the wrong shape is `host.invalid_request`.
+The shape follows agent-bot-identity's in-place MCP registry
+(qwts/agent-bot-identity#1395).
+
+| Field | Required | Rule |
+| --- | --- | --- |
+| `name` | yes | MCP tool name, `^[a-z][a-z0-9_]{0,63}$` |
+| `description` | yes | Non-empty text, shown by `tools/list` |
+| `inputSchema` | yes | JSON Schema with `type: "object"` |
+| `annotations` | no | Object, shown by `tools/list` as given |
+| `class` | yes | `read` or `write`: what the call is allowed through |
+| `when` | no | Distinct condition names, `^[a-z][a-z0-9-]{0,63}$`; the tool is listed only while all hold |
+| `handler` | yes | Function; it resolves to broker queries, never to direct authority |
+
+#### 4.2.2 Command declaration
+
+`ctx.commands.register(cmd)` takes exactly these fields, refused the same
+way. The shape follows agent-bot-identity's in-place CLI registry
+(qwts/agent-bot-identity#1396).
+
+| Field | Required | Rule |
+| --- | --- | --- |
+| `name` | yes | The word after `agent-bot`, `^[a-z][a-z0-9-]{0,63}$` |
+| `visibility` | yes | `public` (listed in help) or `internal` (called by hooks and generated configuration) |
+| `module` | no | `.mjs` path relative to the plugin package; exactly one of `module` and `run` |
+| `run` | no | Function that answers the command itself; takes none of the fields below |
+| `help` | no | Non-empty text printed for `--help` or `-h` |
+| `usage` | no | Non-empty text for arguments that match no subcommand; only with `subcommands` |
+| `prepend` | no | Non-empty list of arguments put before the command's own |
+| `env` | no | Variables added to the child's environment, `^[A-Z][A-Z0-9_]*$` to strings |
+| `subcommands` | no | Non-empty list of subcommand routes, below; the words of each are distinct |
+
+A subcommand route:
+
+| Field | Required | Rule |
+| --- | --- | --- |
+| `words` | yes | Non-empty list of words, `^[a-z][a-z0-9-]*$`; the longest match wins |
+| `module` | yes | `.mjs` path relative to the plugin package |
+| `drop` | no | How many leading arguments to drop, 0 to the number of words; default 0 |
+| `prepend` | no | As for the command |
+| `follow` | no | `true` keeps the dispatcher interruptible while the child runs |
+| `env` | no | As for the command |
+
 ### 4.3 Host services
 
 | Service | Interface (abridged) | Implementation |
