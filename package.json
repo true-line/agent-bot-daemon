@@ -5,7 +5,7 @@
   "description": "HQ for the Soul Agent Platform. Builds against a pinned true-line/soul-contracts release (governance/soul-contracts.json).",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "contracts": "node scripts/soul-contracts.mjs"
   },
   "engines": {
