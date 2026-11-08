@@ -18,6 +18,9 @@
 //   cooperative form: HQ cannot yet tell members apart, only connections).
 // - Profile: the one in force, with a warning when weaker than requested (R8).
 //
+// It provides withLiveRuntime to the task service (hq-tasks), so a task
+// commit checks the runtime and commits without an admission in between.
+//
 // Equip carries no credentials yet: grants and credential references arrive
 // with §9 PRs 18 and 21. It hands out one opaque grant handle per member.
 import { definePlugin } from '../sdk/plugin.mjs';
@@ -228,6 +231,14 @@ export function admissionPlugin({ schemas, profileReasons = () => [] }) {
       ctx.hq.register({ op: 'Ready', auth: 'entry-point', handler: receipted('Ready', renew('Ready')) });
       ctx.hq.register({ op: 'Lease', auth: 'entry-point', handler: receipted('Lease', renew('Lease')) });
       ctx.hq.register({ op: 'souls.list', auth: 'owner', handler: soulsList });
+
+      // For the task service (§9 PR 13): run `fn(runtime)` on a live runtime
+      // of this caller, inside admission's own transaction queue, so no Hello,
+      // Ready or Lease changes the runtime, its epoch or its lease while `fn`
+      // decides. `fn` may open its own plugin's transaction; it must not call
+      // back into admission.
+      const withLiveRuntime = (runtimeId, caller, fn) => store.tx(async (tx) => fn(Object.freeze(liveRuntime(tx, runtimeId, caller, clock.now()))));
+      return { provides: { withLiveRuntime } };
     },
   });
 }
