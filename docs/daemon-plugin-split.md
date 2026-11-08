@@ -125,7 +125,7 @@ destinations; the second column gives the catalog repository for each.
 | --- | --- | ---: | ---: |
 | `soul-runtime` (core, HQ side, entry point) | agent-bot-souls; package and render code to soul-package | 98 | 30,284 |
 | `daemon` (HQ core, member surfaces, CLI, SDK, org) | agent-bot-daemon | 63 | 22,393 |
-| `identity` | agent-bot-identity for the CLI, hooks and attribution; HQ authority to agent-bot-daemon (DRIFT-016) | 49 | 14,773 |
+| `identity` | agent-bot-identity for the CLI, hooks and attribution; HQ authority to agent-bot-daemon core (PDR-0027) | 49 | 14,773 |
 | `comms` (agent-bot side) | agent-comms | 14 | 4,087 |
 | `comms` (today's agent-comms) | agent-comms | 105 | 12,683 |
 | `identity service` | true-line/agent-bot | 9 | 2,258 |
@@ -142,7 +142,7 @@ section summarises it.
 
 | Current ADR-0645 module | Goes to |
 | --- | --- |
-| `identity` | The identity plugin. The tools members run (gh shim, credential helper, git hooks) stay in agent-bot-identity on the Soul side and are cooperative-profile only. HQ authority (device key, grants, approvals, credential references) goes to agent-bot-daemon, per the catalog; which repository ships the identity plugin's HQ-side code is open (DRIFT-016). Key custody, secret stores and App management go to the identity service; the inbox is deprecated. |
+| `identity` | HQ authority (enrollment, the identity-service link, device key and signer, grants, approvals, credential references) becomes part of HQ core in agent-bot-daemon, not a plugin (PDR-0027). The tools members run (gh shim, credential helper, git hooks) stay in agent-bot-identity on the Soul side and are cooperative-profile only; its HQ plugin registers only member surfaces (MCP tools, CLI commands, hook handlers) that resolve to broker queries. Key custody, secret stores and App management go to the identity service; the inbox is deprecated. |
 | `soul` | The Soul runtime, in three parts: `core/` (pure, used on both sides), `hq/` (validation, render, admission, launch, transfer) and `entry-point/` (front door, members, recovery). The entry point goes to agent-bot-souls, package validation, digests and render to soul-package, and adapter manifests to soul-adapters. |
 | `comms` | agent-comms: broker mode in HQ, client mode in the Soul. |
 | `host`, `cli` | agent-bot-daemon. The member-facing surfaces (`agent-bot mcp`, `reach-mcp`, the hook runner) run in the Soul and only ask HQ. |
@@ -180,8 +180,8 @@ These are heuristic scans; Appendix A has the per-file flags.
   `owner-action` → `owner-principal`. Each becomes a host service, an event
   or a broker message kind.
 - **soul to identity goes through one door:** 15 of the 17 crossings import
-  `identity/identity-soul.mjs`. That entry becomes the identity plugin's
-  service object inside HQ.
+  `identity/identity-soul.mjs`. That entry becomes a service object of HQ
+  core's identity (PDR-0027).
 - **Plugins reaching the host.** These are `keyd-supervisor` →
   `daemon-supervisor`, `delegation-grants` and `cli/soul-env-transfer` →
   `agent-jobs`, `telegram-adapter` → `agent-daemon` and `agent-interaction`,
@@ -226,7 +226,8 @@ Tarjan's algorithm over shim-resolved imports.
  │ tier 3  HQ = agent-bot-daemon            (own OS account; trusted host service)     │
  │   core: hq/v1 control socket · owner sessions · authoritative store · profiles     │
  │         member launch under per-member principals · identity-service link         │
- │   plugins (in process): identity · comms (broker) · soul-runtime (hq side)        │
+ │         identity: enrollment · signer · grants · approvals · credential refs      │
+ │   plugins (in process): comms (broker) · Soul runtime (hq side) · member surfaces │
  │   signer: non-exportable device key (Secure Enclave / TPM), HQ account only        │
  │        ▲ hq/v1 (owner)            ▲ broker socket + Hello/Admit/Equip/Ready/Lease  │
  │   GeniusBar · HQ CLI          ┌───┴──────────────── tier 4  Soul ───────────────┐  │
@@ -260,7 +261,9 @@ and brokered adapters to comms; and the package format, render and adapter
 manifests to the Soul runtime. The catalog gives the HQ authority to
 agent-bot-daemon, the package format and render to soul-package, and the
 adapters to soul-adapters. This plan now follows the catalog; the difference
-is recorded as DRIFT-016.
+was recorded as DRIFT-016, now resolved. PDR-0027 settled the last question:
+HQ identity authority is part of HQ core, and agent-bot-identity's plugin
+registers member surfaces only.
 
 Two points are internal to this repository: it pins a `true-line/soul-contracts`
 release by digest and keeps no copies (D5), and an HQ release ships the pinned
@@ -365,7 +368,7 @@ export default definePlugin({
   name: 'agent-comms',              // ^[a-z0-9-]{1,64}$
   version: '0.6.0',                 // the plugin's semver
   hostApi: 1,                       // HQ plugin-API major
-  requires: { 'agent-bot-identity': '^1.0.0' },
+  requires: {},                     // plugin name → semver range
   optional: { 'agent-bot-souls': '>=0.1.0 <1' },
   services: ['config', 'store', 'log', 'receipts', 'identityService', 'credentials', 'launch', 'events', 'approvals', 'budgets'],
   identityServiceRoutes: ['/api/daemon/notices*'],   // allowlist for services.identityService
@@ -418,33 +421,41 @@ discover → resolve → load → init (topological order) → start (topologica
 - **resolve** checks semver and `hostApi`, then requires an acyclic
   `requires` graph.
 - **`init`** is idempotent. Apart from registering, it may run read-only
-  probes (identity asks the signer for device status, for example). It must
+  probes (reading its config or the store, for example). It must
   not write authority state, call the identity service or start long-lived
-  work. It times out at 10 s.
-- **`stop`** gets a deadline.
+  work; every host service that changes state refuses during `init`. It
+  times out at 10 s. A failed or timed-out `init` loses its context: an
+  `init` still running in the background gets `host.context_revoked` from
+  every service and registration.
+- **`stop`** gets a deadline. After `stop`, every plugin context is revoked
+  and short-lived credentials are dropped, so a retained context cannot
+  mint a new one.
 
-**Bootstrap, with identity first and hard-required:**
+**Bootstrap, with identity first and hard-required.** Identity is HQ core,
+not a plugin (PDR-0027), so it is ready before any plugin code runs:
 
 1. **HQ core:** store, control socket (owner sessions), profile detection,
    signer discovery.
-2. **identity `init`:** device status from the signer.
+2. **Core identity:** device status from the signer.
    - **Unenrolled** (no device record) → **safe mode**: only `status`,
-     `enroll` and `doctor` work, and no Soul is admitted.
+     `enroll` and `doctor` work, no plugin starts, and no Soul is admitted.
+     A signer that is missing or reports no status is also safe mode.
    - **Revoked** → the **`device_revoked`** state, which is distinct from
      safe mode and defined in §4.7.
    - **Identity service unreachable** → neither of the above. Admission
      proceeds, and only protected effects that need a fresh credential wait
      with `credential_unavailable` (R9).
-3. **identity `start`:** identity-service link (assertion, token, key-set
+3. **Core identity link:** identity-service link (assertion, token, key-set
    check per §4.7), grants, credential references.
-4. **comms:** broker (requires identity). It drains identity-service notices
-   and connects to configured relays.
-5. **soul-runtime:** HQ side (requires identity and comms): validation,
-   render, admission handlers.
-6. **`hq/v1` admissions open.** Entry points can now send `Hello`.
+4. **Plugins, in dependency order:** comms (broker) drains identity-service
+   notices and connects to configured relays; the Soul runtime's HQ side
+   (requires comms) brings validation, render and admission handlers;
+   agent-bot-identity registers its member surfaces.
+5. **`hq/v1` admissions open.** Entry points can now send `Hello`.
 
-If a non-identity plugin fails, it is marked `degraded`, its dependents
-don't start, and `status` reports why.
+`status`, `device.status` and `device.enroll` are answered by core; a plugin
+that registers one is refused. If a plugin fails, it is marked `degraded`,
+its dependents don't start, and `status` reports why.
 
 ### 4.5 Versioning and compatibility
 
@@ -700,7 +711,7 @@ createSoulCore({ store, credentials, exec, comms, identity, approvals, clock, ra
 | `credentials` | `reference(name, purpose)` → opaque reference | HQ `credentials` service. Members only ever see references. | Identity service directly |
 | `exec` | `launch(member)`, `turn(...)`, `cancel`, `workspace.view(task)` | HQ `launch` under per-member principals; entry point drives ACP sessions; workspace views from the task's write scope | Sandbox per turn |
 | `comms` | `send`, `inbox`, `ack`, `onDirective`, `query` | Broker socket (comms client in the Soul) | Broker in the hosted environment |
-| `identity` | `soulId`, `memberId`, `runtimeId`, `epoch`, `coAuthorTrailer` | Identity plugin through HQ | Same records |
+| `identity` | `soulId`, `memberId`, `runtimeId`, `epoch`, `coAuthorTrailer` | HQ core identity (PDR-0027) | Same records |
 | `approvals` | `request(...)`, `decided(id)` | HQ approval records | The same contract |
 | `clock`, `random`, `log` | injected | Host services | Equivalents |
 

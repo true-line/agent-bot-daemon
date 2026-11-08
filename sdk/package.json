@@ -1,0 +1,14 @@
+{
+  "name": "@agent-bot/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The HQ plugin contract (hq-plugin-contract) for agent-bot-daemon: definePlugin, the plugin host, createTestHost and the plugin conformance suite.",
+  "type": "module",
+  "exports": {
+    ".": "./index.mjs",
+    "./wire": "./wire/index.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
