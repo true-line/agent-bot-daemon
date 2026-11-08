@@ -1,6 +1,7 @@
 {
   "name": "agent-bot-daemon",
   "version": "0.0.0",
+  "license": "MIT",
   "private": true,
   "description": "HQ for the Soul Agent Platform. Builds against a pinned true-line/soul-contracts release (governance/soul-contracts.json).",
   "type": "module",
