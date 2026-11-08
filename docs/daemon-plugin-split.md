@@ -1,12 +1,24 @@
 # Splitting agent-bot into a daemon (HQ) and plugins
 
-**Status:** Draft for review. This is a plan only: nothing in it has been built,
-and no refactor commits come with it.
-**Decision owner:** Chris
-**Governing spec:** *Soul Agent Platform*, whitepaper draft 0.4 (Chris Kane,
-2026-10-27), called **0.4** below. This document maps 0.4 onto the agent-bot
-repositories. Where the two differ, 0.4 wins unless a decision in §10 records
-a deliberate departure.
+**Status:** Draft. This is the implementation plan for HQ and its plugins.
+The soul-contracts pin (§4.6) is built; nothing else in it is yet.
+**Decision owner:** the owner.
+**Platform:** [true-line/agent-bot-platform](https://github.com/true-line/agent-bot-platform),
+read at `main`, is the product source of truth (platform PDR-0001, PDR-0020).
+The requirements (R1–R12), conformance tests (T01–T30), architecture, trust
+domains, repository catalog, seams and cross-repository decisions live there.
+This plan links to them and does not restate them. This repository's charter
+is its [catalog entry](https://github.com/true-line/agent-bot-platform/blob/main/docs/03-architecture/repository-catalog.md#agent-bot-daemon). Where this plan and the
+platform disagree, the platform wins, and the conflict is recorded in the
+platform's [drift register](https://github.com/true-line/agent-bot-platform/blob/main/docs/00-governance/drift-register.md).
+**What stays here:** the plugin contract (§4, the current home of the
+`hq-plugin-contract` seam), HQ's owner-interface design (§7), the migration
+plan (§9), this repository's decisions (§10.1) and the module inventory
+(Appendix A).
+**Governing spec:** *Soul Agent Platform*, whitepaper draft 0.4 (2026-10-27),
+called **0.4** below. The platform pins it as source S6
+([frozen conversion](https://github.com/true-line/agent-bot-platform/blob/main/docs/papers/soul-platform-draft-0.4.md)). Where 0.4
+and an accepted platform decision differ, the decision wins.
 **Sources read, pinned:**
 
 | Source | Ref |
@@ -15,7 +27,7 @@ a deliberate departure.
 | Native Shareable Soul Packages, draft 0.3 (0.4's [S4]) | Two-page overview; full paper at Zenodo 10.5281/zenodo.23547566 |
 | `qwts/agent-bot-identity` | `959daf9` (v0.13.0, after #1181 server mode) |
 | `qwts/agent-comms` | `09f1a52` (v0.5.4) |
-| agent-bot server API, as deployed | `https://agent-bot-gold.vercel.app/docs/api.md`, read 2026-10-27; response key `kid` `KAqTzL7HfHmOiSbT` |
+| agent-bot server API, as deployed | `https://agents.true-line.ai/docs/api.md`, read 2026-10-27 through its deployment alias; response key `kid` `KAqTzL7HfHmOiSbT` |
 | Org / SOP | `qwts/qwts-agent-org@180f6dd`, `qwts/qwts-agent-sop@ee554a3` |
 
 ## 0. Summary
@@ -27,14 +39,18 @@ a deliberate departure.
   issuance, and never gets lifecycle or execution control. Relays route
   sealed frames and nothing else. The Soul (its entry point and members) is
   untrusted for authority.
-- **The repositories map onto 0.4:**
-  - **agent-bot-daemon** is HQ.
-  - **agent-bot-identity** is the identity plugin inside HQ: device key,
-    enrollment, credential references, grants, approvals.
-  - **agent-bot-comms** provides the broker in HQ, the comms client in the
+- **The repositories map onto 0.4** as the platform's
+  [repository catalog](https://github.com/true-line/agent-bot-platform/blob/main/docs/03-architecture/repository-catalog.md) charters them (platform PDR-0002):
+  - **agent-bot-daemon** is HQ: admission, grants, approvals, budgets, the
+    task and action ledgers, the device key and the plugin host.
+  - **agent-bot-identity** is the identity toolset inside each Soul: the
+    `agent-bot` CLI, hooks, the fail-closed `gh` and attribution. Its HQ
+    half moves to agent-bot-daemon.
+  - **agent-comms** provides the broker in HQ, the comms client in the
     Soul, and relay mode for the relays.
-  - **agent-bot-soul-runtime** provides the package, render and admission
-    logic in HQ, plus the Soul's entry point.
+  - **agent-bot-souls** is the Soul runtime: the entry point, member
+    supervision and dreams. **soul-package** owns the package format,
+    validation and render, and **soul-adapters** the per-harness adapters.
 
   Inside HQ, plugins talk only through host services and events.
 - **This replaces the first version of this plan.** That version treated the
@@ -89,38 +105,31 @@ a deliberate departure.
 
   It doesn't yet bind mints to grants, keep issuance records, offer an
   owner-unlock vault, or check hardware attestation (0.4 §4, Appendix A).
-  The server is moving to `agents.true-line.ai`.
-- **The empty repos.** `qwts/agent-bot-daemon` now has a seeded `main`
-  (PR #2's base); `qwts/agent-bot-soul-runtime` is still empty, and
-  `qwts/agent-bot-comms` doesn't exist.
+  The server's canonical address is `agents.true-line.ai`.
+- **The other repositories.** agent-bot-souls is empty and designated as the
+  Soul runtime's home; soul-package and soul-adapters are skeletons;
+  agent-comms is active in `qwts` (catalog, platform PDR-0002).
 
 ### 1.2 0.4 components and where they live
 
-| 0.4 component (§3) | Trust domain | Repository here | Today |
-| --- | --- | --- | --- |
-| HQ | Trusted host service, outside every Soul | **agent-bot-daemon** (D1; 0.4 Appendix C names managed-machine) | `agent-daemon.mjs` and the host modules, running in each agent account |
-| Broker | Same as HQ | agent-bot-comms, broker mode, loaded into HQ | agent-comms broker (owner account) |
-| Relay (site, cloud) | Untrusted for content; routing only | agent-bot-comms, relay mode | None (ADR-0028 federation is policy only) |
-| Installation authority (post-MVP) | Owner-operated service with its own key | Not planned here | None |
-| Identity service | Remote and owner-operated; custody and issuance only | `true-line/agent-bot` (Go) | Server mode, opt-in |
-| Entry point (`agent-bot soul run`) | Inside the Soul; untrusted | agent-bot-soul-runtime | Launch, ACP and cold-wake code in the daemon |
-| Comms client | Inside the Soul; early validation only | agent-bot-comms, client mode | `agent-comms` CLI |
-| Lead, specialist (harness adapters over ACP) | Inside the Soul | Adapter manifests in soul-runtime | `acp-engine`, `acp-registry` |
-| GeniusBar, HQ CLI | Owner's authenticated session | GeniusBar; the `agent-bot` CLI from agent-bot-daemon | GeniusBar; `agent-bot` |
+The platform owns this map. Its [architecture](https://github.com/true-line/agent-bot-platform/blob/main/docs/03-architecture/overview.md) places 0.4's
+components, and its [repository catalog](https://github.com/true-line/agent-bot-platform/blob/main/docs/03-architecture/repository-catalog.md) assigns each one to a
+repository.
 
 ### 1.3 Size by destination
 
-This is the result of the inventory in Appendix A.
+This is the result of the inventory in Appendix A. Appendix A names plugin
+destinations; the second column gives the catalog repository for each.
 
-| Destination | Files | Lines |
-| --- | ---: | ---: |
-| agent-bot-soul-runtime (core, HQ side, entry point) | 98 | 30,284 |
-| agent-bot-daemon (HQ core, member surfaces, CLI, SDK, org) | 63 | 22,393 |
-| agent-bot-identity (plugin) | 49 | 14,773 |
-| agent-bot-comms (agent-bot side) | 14 | 4,087 |
-| agent-bot-comms (today's agent-comms) | 105 | 12,683 |
-| Authority moves to the identity service | 9 | 2,258 |
-| Deprecated | 6 | 1,848 |
+| Appendix A target | Repository (catalog) | Files | Lines |
+| --- | --- | ---: | ---: |
+| `soul-runtime` (core, HQ side, entry point) | agent-bot-souls; package and render code to soul-package | 98 | 30,284 |
+| `daemon` (HQ core, member surfaces, CLI, SDK, org) | agent-bot-daemon | 63 | 22,393 |
+| `identity` | agent-bot-identity for the CLI, hooks and attribution; HQ authority to agent-bot-daemon (DRIFT-016) | 49 | 14,773 |
+| `comms` (agent-bot side) | agent-comms | 14 | 4,087 |
+| `comms` (today's agent-comms) | agent-comms | 105 | 12,683 |
+| `identity service` | true-line/agent-bot | 9 | 2,258 |
+| `deprecated` | none | 6 | 1,848 |
 
 ## 2. Inventory and dependency map
 
@@ -133,9 +142,9 @@ section summarises it.
 
 | Current ADR-0645 module | Goes to |
 | --- | --- |
-| `identity` | agent-bot-identity, loaded into HQ. The tools members run (gh shim, credential helper, git hooks) stay on the Soul side and are cooperative-profile only. Key custody, secret stores and App management go to the identity service; the inbox is deprecated. |
-| `soul` | agent-bot-soul-runtime, in three parts: `core/` (pure, used on both sides), `hq/` (validation, render, admission, launch, transfer) and `entry-point/` (front door, members, recovery). |
-| `comms` | agent-bot-comms: broker mode in HQ, client mode in the Soul. |
+| `identity` | The identity plugin. The tools members run (gh shim, credential helper, git hooks) stay in agent-bot-identity on the Soul side and are cooperative-profile only. HQ authority (device key, grants, approvals, credential references) goes to agent-bot-daemon, per the catalog; which repository ships the identity plugin's HQ-side code is open (DRIFT-016). Key custody, secret stores and App management go to the identity service; the inbox is deprecated. |
+| `soul` | The Soul runtime, in three parts: `core/` (pure, used on both sides), `hq/` (validation, render, admission, launch, transfer) and `entry-point/` (front door, members, recovery). The entry point goes to agent-bot-souls, package validation, digests and render to soul-package, and adapter manifests to soul-adapters. |
+| `comms` | agent-comms: broker mode in HQ, client mode in the Soul. |
 | `host`, `cli` | agent-bot-daemon. The member-facing surfaces (`agent-bot mcp`, `reach-mcp`, the hook runner) run in the Soul and only ask HQ. |
 | `shared`, `harness` | `@agent-bot/sdk`, vendored by digest. Adapter manifests follow 0.4 §10. |
 | `org` | agent-bot-daemon `org/`. Per-soul SOP selection goes to soul-runtime core. |
@@ -182,7 +191,8 @@ These are heuristic scans; Appendix A has the per-file flags.
 ### 2.3 Wire code duplicated across repos
 
 The SDK `wire/` folder should own these once, and 0.4 WP1 turns them into
-versioned schemas:
+versioned schemas. None of them is wire framing, which agent-comms owns
+(catalog):
 
 | Code | Copies |
 | --- | --- |
@@ -208,7 +218,7 @@ Tarjan's algorithm over shim-resolved imports.
 ## 3. Target architecture
 
 ```text
- tier 1  cloud relay  (agent-bot-comms relay mode; untrusted for content; sealed frames)
+ tier 1  cloud relay  (agent-comms relay mode; untrusted for content; sealed frames)
             ▲  outbound, store-and-forward, no execution channel
  tier 2  site relay   (same code; first to ship)
             ▲
@@ -238,27 +248,30 @@ access-controlled. Remote owner administration uses a tunnel the owner opens
 
 ### 3.1 The repositories
 
-| Repo | Owns | Ships |
-| --- | --- | --- |
-| **agent-bot-daemon** (HQ) | `hq/v1` control API and owner session authentication; the authoritative store; enforcement-profile detection and honest reporting (R8); member launch under protected principals; the identity-service link; the plugin host; the `agent-bot` CLI (owner commands); the member-facing surfaces (`agent-bot mcp`, `reach-mcp`, hook runner) as thin clients of HQ; readiness and doctor; install and update; the org resolver; `@agent-bot/sdk`. It pins a `true-line/soul-contracts` release and loads its fixtures, keeping no local copies (D5) | The HQ release: the pinned plugin set plus launchers for macOS, Windows and Linux |
-| **agent-bot-identity** | Device enrollment with the identity service; the HQ signer (keyd → `agent-bot-signer`; host-side key custody moves to agent-bot-machine per D4); credential references and their resolution into short-lived tokens held by HQ; grants and caller-bound grant handles; HQ approval records; Soul ID, member, runtime and installation identity; receipts and attribution (0.4's [S5] scope); the cooperative-profile member tools (gh shim, credential helper, git hooks) | Plugin package plus the signer binary |
-| **agent-bot-comms** | Broker mode (in HQ): mailbox, durable inbox and outbox, directives and queries as message kinds, the task service, dedup in HQ's store, budgets and sub-allocations, brokered inference and service egress, receipts. Client mode (in the Soul): the CLI and early validation. Relay mode: site and cloud relays. Also the identity-service notices feed, the A2A edge gateway, and channel adapters (Telegram). | Plugin package, the `agent-comms` CLI, and the relay build |
-| **agent-bot-soul-runtime** | Package format (0.4 §11), validator, manifest digests, `soul build` render per adapter, adapter manifests, transfer, fork and template export, dream admission and candidate workflow (HQ side); the entry point: front door, member supervision, role routing, handoff notes, recovery ladder (Soul side); the pure core both use; conformance fixtures | `core/`, `hq/` (plugin), `entry-point/` (pinned with each Soul, per 0.4 §3) |
-| **agent-bot-machine** (today `qwts/managed-machine`) | The privileged executor and installer in the `admin` account (no root): signed-request verbs from agent-daemon only, receipts, catalog verification; host-side credential and policy custody, and verification of the owner's Secure Enclave presence signature for privileged requests (D4) | The executor binary, a plugin piece agent-daemon can host, and a lightweight shim for hosts without the rest of the runtime; Developer ID-signed keyd custody and presence-helper builds |
-| **soul-contracts** (`true-line/soul-contracts`, WP1) | The contract baseline every implementation pins: JSON Schemas for 0.4 Appendix A (`hq/v1`, `wire/v1`, `task/v1`, `records/v1`), positive, negative and JCS fixtures, the error registry, the glossary, R1–R12 and T01–T30 traceability, and the papers. No runtime code. No implementer edits it to make its own code pass (D5) | Versioned releases pinned by digest |
+The platform's [repository catalog](https://github.com/true-line/agent-bot-platform/blob/main/docs/03-architecture/repository-catalog.md) is the charter for each
+repository: one purpose, what it owns and must not own, its trust domain and
+its seams. The [seams](https://github.com/true-line/agent-bot-platform/blob/main/docs/03-architecture/seams.md) page lists every contract between them. This
+repository provides `hq-v1`, `task-v1` and `hq-plugin-contract`; the plugin
+contract's home is §4 of this plan.
+
+The first version of this table gave the HQ signer, grants, approval records
+and credential references to agent-bot-identity; the task service, budgets
+and brokered adapters to comms; and the package format, render and adapter
+manifests to the Soul runtime. The catalog gives the HQ authority to
+agent-bot-daemon, the package format and render to soul-package, and the
+adapters to soul-adapters. This plan now follows the catalog; the difference
+is recorded as DRIFT-016.
+
+Two points are internal to this repository: it pins a `true-line/soul-contracts`
+release by digest and keeps no copies (D5), and an HQ release ships the pinned
+plugin set (`governance/plugins.json`) with launchers for macOS, Windows and
+Linux.
 
 ### 3.2 Trust domains, per plugin
 
-The domains are 0.4's:
-
-- **HQ:** trusted, in its own account. Its key store and authority database
-  are inaccessible to Soul processes.
-- **Soul:** the model and tool trust domain: the entry point, members, and
-  the tools they run.
-- **Identity service:** remote, trusted for credential custody and issuance
-  only.
-- **Relay:** untrusted for content.
-- **Owner client:** GeniusBar and the HQ CLI under the owner's account.
+The trust domains and the enforcement rule are the platform's
+([trust domains and profiles](https://github.com/true-line/agent-bot-platform/blob/main/docs/03-architecture/trust-domains-and-profiles.md)). The tables below place each piece of
+the plugins in one of them; which repository ships each piece follows §3.1.
 
 #### Daemon (HQ core)
 
@@ -309,15 +322,19 @@ The domains are 0.4's:
 
 ### 3.3 Enforcement profiles (0.4 §4, R8)
 
-| Profile | What it means here | Where |
-| --- | --- | --- |
-| Managed protected | HQ in its own account. Per-member principals. Broker-only protected egress. Caller-bound grants. Durable receipts. | The Linux reference host first; macOS per-member accounts plus a sandbox second. |
-| Managed cooperative | HQ protects keys, but members share a trust domain or have bypass routes | Today's layout, and macOS until it qualifies. Confinement, gh shim and git hooks are cooperative controls. |
-| Standalone unenforced | Local stub and local credentials | Development only. `legacy-local-custody` is **off by default** and can be turned on only in this profile. `doctor` and `status` flag it, and every receipt names it. |
+The profiles (managed protected, managed cooperative and standalone
+unenforced) and what each one guarantees are defined by the platform
+([trust domains and profiles](https://github.com/true-line/agent-bot-platform/blob/main/docs/03-architecture/trust-domains-and-profiles.md)). Today's layout is managed
+cooperative. What HQ does with them:
 
-Every receipt and the GeniusBar header name the profile actually in force.
-A protected claim under a weaker profile is refused with
-`profile_insufficient`.
+- Every receipt and the GeniusBar header name the profile actually in force.
+  A protected claim under a weaker profile is refused with
+  `profile_insufficient`.
+- `legacy-local-custody` is **off by default** and can be turned on only in
+  the standalone profile. `doctor` and `status` flag it, and every receipt
+  names it.
+- The Linux reference host qualifies for managed protected first (§9 PR 16);
+  macOS per-member accounts plus a sandbox come second (PR 29, D7).
 
 ### 3.4 Rules that keep the split honest
 
@@ -345,11 +362,11 @@ entry point is a separate process, not a plugin.
 import { definePlugin } from '@agent-bot/sdk';
 
 export default definePlugin({
-  name: 'agent-bot-comms',          // ^[a-z0-9-]{1,64}$
+  name: 'agent-comms',              // ^[a-z0-9-]{1,64}$
   version: '0.6.0',                 // the plugin's semver
   hostApi: 1,                       // HQ plugin-API major
   requires: { 'agent-bot-identity': '^1.0.0' },
-  optional: { 'agent-bot-soul-runtime': '>=0.1.0 <1' },
+  optional: { 'agent-bot-souls': '>=0.1.0 <1' },
   services: ['config', 'store', 'log', 'receipts', 'identityService', 'credentials', 'launch', 'events', 'approvals', 'budgets'],
   identityServiceRoutes: ['/api/daemon/notices*'],   // allowlist for services.identityService
   async init(ctx) { /* register; read-only probes only; return provided services */ },
@@ -531,7 +548,7 @@ These rules apply to every call from HQ to the identity service.
 This section replaces the previous "relay RPC" design, which contradicted
 R2.
 
-- **Relays are agent-bot-comms in relay mode** (0.4 §6). A site relay ships
+- **Relays are agent-comms in relay mode** (0.4 §6). A site relay ships
   first, then a cloud relay running the same routing code in a restricted
   configuration. `relay.true-line.ai` on a Cloudflare Durable Object is a
   deployment choice that lives in configuration, not in the contract (R10).
@@ -572,24 +589,14 @@ R2.
 
 ## 5. Soul package (0.4 §11, [S4])
 
+The package format is the `soul-package-format` seam, provided by
+soul-package (catalog). This section records what HQ needs from it.
+
 ### 5.1 Layout
 
-| Path under `Example.soul/Contents/` | Holds | Class |
-| --- | --- | --- |
-| `SoulInfo.json` | Accepted declarations: identity references, host requirements, role assignments and fallback order, approved destinations, budgets | Definition |
-| `SoulLock.json` | Resolved digests, target platforms, pinned models (including the embedding model), adapter and renderer versions, rendered-output digest per adapter | Definition |
-| `primitives/` | Accepted skills, helper scripts, tool guidance and hooks in harness-neutral form; overrides under `primitives/<name>/adapters/<adapter-id>/` | Definition |
-| `opt/` | Pinned runtimes, harness binaries, local models, offline artifacts | Reconstructible |
-| `memorial/knowledge/` | Durable assertions with sources | Life |
-| `memorial/retrieval/` | Indexing recipe | Life |
-| `dreams/inputs/` | Durable notes awaiting consolidation (batched, about 30 s) | Life |
-| `dreams/runs/<run-id>/` | Candidate trees and evaluation evidence | Life |
-| `comms/` | Mirror of tasks and dedup watermarks, outbox drafts, handoffs | Life (mirror) |
-| `home/<member>/` | Each member's private working life, including harness-native state | Life |
-| `workspaces/` | Explicitly selected workspace data | Life |
-| `cache/retrieval/` | Rebuildable indexes | Rebuilt |
-| `host/` | Sockets, PIDs, host bindings | Recreated per host |
-| `tmp/` | Scratch | Dropped |
+The layout and its data classes are described on the platform's
+[package format](https://github.com/true-line/agent-bot-platform/blob/main/docs/03-architecture/interfaces/package-format.md) page;
+soul-package holds the specification.
 
 Authoritative grants, spent nonces, key material, task revisions, dedup and
 action records live in HQ's store, not in the package. Copying a `.soul`
@@ -702,6 +709,10 @@ Source modules: Appendix A, `soul-runtime/core`, `/hq` and `/entry-point`.
 
 ## 7. Owner interface: `hq/v1` for GeniusBar and the HQ CLI
 
+The `hq-v1` seam's records are in soul-contracts `schemas/hq/v1`, and the
+platform's [hq/v1 interface](https://github.com/true-line/agent-bot-platform/blob/main/docs/03-architecture/interfaces/hq-v1.md)
+page describes it. This section is HQ's design for serving it.
+
 ### 7.1 Transport
 
 | Platform | Transport | Who may connect |
@@ -778,69 +789,72 @@ releases.
 ## 9. Migration plan
 
 Each step is one PR with one objective, mergeable on its own and reversible.
-The stages and exits follow 0.4 §13, and each PR names its work package.
-Each one follows the SOP (issue first, PR-first, validate before push,
-bot-signed commits) and uses `Refs #N` for partial work.
+A row that names two repositories is one PR in each. The stages and exits
+follow 0.4 §13, and each PR names its work package. Each one follows the SOP
+(issue first, PR-first, validate before push, bot-signed commits) and uses
+`Refs #N` for partial work. The **Repo** column follows the platform's
+[repository catalog](https://github.com/true-line/agent-bot-platform/blob/main/docs/03-architecture/repository-catalog.md). Each row is tracked by an issue in the
+repository that does the work; this repository tracks only its own rows.
 
 ### Stage 0: contract baseline and in-place preparation (WP1)
 
 | # | Repo | WP | PR | Done when |
 | --- | --- | --- | --- | --- |
-| 1 | contracts | WP1 | **Contracts** in `true-line/soul-contracts` (D5): glossary, JSON Schemas for 0.4 Appendix A records, error registry (0.4's minimum codes), positive and negative fixtures, the R1–R12 → tests traceability matrix, and this inventory as the compatibility baseline (referenced from there at a pinned commit) | Fixtures validate; a schema review finds no vendor token (R10) |
-| 2 | identity | WP7 | **Golden surface tests** for every `agent-bot` command, MCP tool and route-auth row | Green on `main` unchanged |
-| 3 | identity | WP2 | **Break C1** (inversion; `ownerGate` → approvals port) | The `identity → soul` edge is gone |
-| 4 | identity | WP3 | **Break C2, C4, C5** | SCC count down to 2 |
-| 5 | identity | WP3 | **Break C3** (`sop.mjs` split, `RevisionStore`) | No cycles |
-| 6 | identity | WP1 | **Target and domain columns** in `runtime-modules.json`, plus a test forbidding new plugin → plugin edges | Merged, no runtime change |
-| 7 | daemon | WP1 | **SDK v0:** `definePlugin`, host services, `createTestHost`, plugin conformance suite, `wire/`; pins the `soul-contracts` release from PR 1 by digest (the pin landed first, #76) | Pinned, digested copy |
-| 8 | identity | WP2 | **Route registry** (generalises `createIdentityRoutes`/`createSoulRoutes`) | `daemon-route-auth.test.mjs` unchanged |
-| 9 | identity | WP3 | **MCP and CLI registries** | Golden tests green |
-| 10 | identity | WP2 | **Identity-service link split and hardening** (§4.7) | Each refusal tested |
-| 11 | identity | WP4 | **Notices pulled with custody-then-ack;** `take_inbox` becomes an alias | T05-style dedup test passes |
+| 1 | soul-contracts | WP1 | **Contracts** in `true-line/soul-contracts` (D5): glossary, JSON Schemas for 0.4 Appendix A records, error registry (0.4's minimum codes), positive and negative fixtures, the R1–R12 → tests traceability matrix, and this inventory as the compatibility baseline (referenced from there at a pinned commit) | Fixtures validate; a schema review finds no vendor token (R10) |
+| 2 | agent-bot-identity | WP7 | **Golden surface tests** for every `agent-bot` command, MCP tool and route-auth row | Green on `main` unchanged |
+| 3 | agent-bot-identity | WP2 | **Break C1** (inversion; `ownerGate` → approvals port) | The `identity → soul` edge is gone |
+| 4 | agent-bot-identity | WP3 | **Break C2, C4, C5** | SCC count down to 2 |
+| 5 | agent-bot-identity | WP3 | **Break C3** (`sop.mjs` split, `RevisionStore`) | No cycles |
+| 6 | agent-bot-identity | WP1 | **Target and domain columns** in `runtime-modules.json`, plus a test forbidding new plugin → plugin edges | Merged, no runtime change |
+| 7 | agent-bot-daemon | WP1 | **SDK v0:** `definePlugin`, host services, `createTestHost`, plugin conformance suite, the `wire/` shared codecs (§2.3; framing stays in agent-comms); pins the `soul-contracts` release from PR 1 by digest (the pin landed first, #76) | Pinned, digested copy |
+| 8 | agent-bot-identity | WP2 | **Route registry** (generalises `createIdentityRoutes`/`createSoulRoutes`) | `daemon-route-auth.test.mjs` unchanged |
+| 9 | agent-bot-identity | WP3 | **MCP and CLI registries** | Golden tests green |
+| 10 | agent-bot-identity | WP2 | **Identity-service link split and hardening** (§4.7) | Each refusal tested |
+| 11 | agent-bot-identity | WP4 | **Notices pulled with custody-then-ack;** `take_inbox` becomes an alias | T05-style dedup test passes |
 
 ### Stage 1: local vertical slice (WP2–WP4)
 
 | # | Repo | WP | PR | Done when |
 | --- | --- | --- | --- | --- |
-| 12 | daemon | WP2 | **HQ skeleton** in its own account: store, control socket with owner sessions, profile reporting, `hq/v1` Hello/Admit/Equip/Ready/Lease. It **supervises the existing daemon unchanged** (strangler). | HQ reports `managed cooperative` honestly; T14 |
-| 13 | comms | WP4 | **Task service in HQ's store** (`task/v1`, CAS, operation keys, proposals versus commitments, write-scope exclusion); directives and queries as broker kinds | T04, T05, T20 |
-| 14 | soul-runtime | WP3 | **Entry point** `agent-bot soul run`: ACP front door and terminal chat; lead plus specialist on fake adapters; role routing; handoff notes; recovery ladder | One task completes with scoped proposals and one final commitment |
+| 12 | agent-bot-daemon | WP2 | **HQ skeleton** in its own account: store, control socket with owner sessions, profile reporting, `hq/v1` Hello/Admit/Equip/Ready/Lease. It **supervises the existing daemon unchanged** (strangler). | HQ reports `managed cooperative` honestly; T14 |
+| 13 | agent-bot-daemon | WP4 | **Task service in HQ's store** (`task/v1`, CAS, operation keys, proposals versus commitments, write-scope exclusion), as the `task-v1` provider; agent-comms mirrors the records through its codec and carries directives and queries as broker kinds (platform PDR-0024) | T04, T05, T20 |
+| 14 | agent-bot-souls | WP3 | **Entry point** `agent-bot soul run`: ACP front door and terminal chat; lead plus specialist on fake adapters; role routing; handoff notes; recovery ladder | One task completes with scoped proposals and one final commitment |
 
 ### Stage 2a: member isolation (WP2)
 
 | # | Repo | WP | PR | Done when |
 | --- | --- | --- | --- | --- |
-| 15 | identity | WP2 | **HQ signer:** device key in TPM (Linux) or Secure Enclave (macOS) under the HQ account; soul-token key in the signer (`v2`, ES256), with `vouch-key.pem` removed; re-enrollment path | `key_storage=hardware`; no signing key file on the host; the agent-comms broker verifies soul token `v2`; T02 |
-| 16 | daemon | WP2 | **Linux protected profile:** per-member service identities, namespaces, broker socket and workspace views as the only exits, caller-bound grant handles | T01–T03, T21 |
+| 15 | agent-bot-daemon | WP2 | **HQ signer:** device key in TPM (Linux) or Secure Enclave (macOS) under the HQ account; soul-token key in the signer (`v2`, ES256), with `vouch-key.pem` removed; re-enrollment path | `key_storage=hardware`; no signing key file on the host; the agent-comms broker verifies soul token `v2`; T02 |
+| 16 | agent-bot-daemon | WP2 | **Linux protected profile:** per-member service identities, namespaces, broker socket and workspace views as the only exits, caller-bound grant handles | T01–T03, T21 |
 
 ### Stage 2b: brokered adapters (WP2, WP4)
 
 | # | Repo | WP | PR | Done when |
 | --- | --- | --- | --- | --- |
-| 17 | server | WP2 | **Identity service:** grant-bound minting per task and operation, credential issuance records with `task_id` and `operation_id`, live tokens revoked on device revoke and `device_revoked` on every call afterwards, hardware attestation, an owner policy to refuse software-key devices, device self-revoke, owner-unlock vault | Documented in the server API docs; revocation test shows cached tokens dropped and `device_revoked` |
-| 18 | identity | WP2 | **Credential references resolved by HQ;** `legacy-local-custody` off by default and opt-in only under the standalone profile; `doctor` and `status` flag it and any key file | No long-lived secret on a fresh host |
-| 19 | comms | WP4 | **Brokered inference and service adapter** (GitHub), action ledger with reconciliation, budgets and sub-allocations. Under `managed-protected`, service writes go only through this adapter; members get no service tokens and no member-side `signed-commit` (Q4) | T06–T11, T17–T19, T23, T25, T26; negative tests for a direct member write and for a weaker profile claiming protected |
-| 20 | identity | WP4 | **Retire gh-app-hook** | `doctor` has no `inbox.*` checks |
+| 17 | agent-bot | WP2 | **Identity service:** grant-bound minting per task and operation, credential issuance records with `task_id` and `operation_id`, live tokens revoked on device revoke and `device_revoked` on every call afterwards, hardware attestation, an owner policy to refuse software-key devices, device self-revoke, owner-unlock vault | Documented in the server API docs; revocation test shows cached tokens dropped and `device_revoked` |
+| 18 | agent-bot-daemon | WP2 | **Credential references resolved by HQ;** `legacy-local-custody` off by default and opt-in only under the standalone profile; `doctor` and `status` flag it and any key file | No long-lived secret on a fresh host |
+| 19 | agent-bot-daemon | WP4 | **Brokered inference and service adapter** (GitHub), action ledger with reconciliation, budgets and sub-allocations. Under `managed-protected`, service writes go only through this adapter; members get no service tokens and no member-side `signed-commit` (Q4) | T06–T11, T17–T19, T23, T25, T26; negative tests for a direct member write and for a weaker profile claiming protected |
+| 20 | agent-bot-identity | WP4 | **Retire gh-app-hook** | `doctor` has no `inbox.*` checks |
 
 ### Stage 3: operator pilot (WP5, WP6)
 
 | # | Repo | WP | PR | Done when |
 | --- | --- | --- | --- | --- |
-| 21 | daemon | WP6 | **Owner interface:** `hq/v1` owner operations, approval records, enrollment and receipts in the HQ CLI; GeniusBar moves to `hq/v1` | T24; the pilot rubric runs through terminal chat and ACP only |
-| 22 | soul-runtime | WP5 | **`contents-1` package,** validator, `soul migrate`, render per adapter with digests in `SoulLock.json` | T16; P1–P4 |
-| 23 | soul-runtime | WP5 | **Dream workflow per 0.4 §10:** dream member, dream grant, staged candidate tree, per-cell evaluation, owner acceptance of the digest | T22, T27–T30 |
-| 24 | comms | — | **Rename `agent-comms` → `agent-bot-comms`;** broker, client and relay modes as one plugin package; carry agent-bot's comms modules | Plugin conformance green |
-| 25 | identity | — | **Shed host, soul and comms** from agent-bot-identity, leaving the identity plugin and signer | Plugin conformance green |
-| 26 | soul-runtime | — | **Carry core, `hq/` and `entry-point/`** into agent-bot-soul-runtime (path-filtered history, re-signed with origin trailers) | P1–P8 green |
-| 27 | daemon | WP7 | **First bundled HQ release** (`governance/plugins.json`); Homebrew, GeniusBar and the Linux bundle switch; the old per-account daemon is retired after the contract and recovery suites pass | Golden surface tests green against the release |
+| 21 | agent-bot-daemon | WP6 | **Owner interface:** `hq/v1` owner operations, approval records, enrollment and receipts in the HQ CLI; GeniusBar moves to `hq/v1` | T24; the pilot rubric runs through terminal chat and ACP only |
+| 22 | soul-package | WP5 | **`contents-1` package,** validator, `soul migrate`, render per adapter with digests in `SoulLock.json` | T16; P1–P4 |
+| 23 | agent-bot-souls | WP5 | **Dream workflow per 0.4 §10:** dream member, dream grant, staged candidate tree, per-cell evaluation, owner acceptance of the digest | T22, T27–T30 |
+| 24 | agent-comms | — | **agent-comms as one HQ plugin package:** broker, client and relay modes; carry agent-bot's comms modules. The name stays (platform PDR-0002 decision 5); a rename would need a platform decision first | Plugin conformance green |
+| 25 | agent-bot-identity | — | **Shed host, soul and comms** from agent-bot-identity, leaving the identity CLI, hooks and attribution its charter keeps; HQ authority moves to agent-bot-daemon | Golden surface tests green; no HQ authority left in agent-bot-identity |
+| 26 | agent-bot-souls, soul-package | — | **Carry core, `hq/` and `entry-point/`** into agent-bot-souls, and the package and render code into soul-package (path-filtered history, re-signed with origin trailers) | P1–P8 green |
+| 27 | agent-bot-daemon | WP7 | **First bundled HQ release** (`governance/plugins.json`); Homebrew, GeniusBar and the Linux bundle switch; the old per-account daemon is retired after the contract and recovery suites pass | Golden surface tests green against the release |
 
 ### Stage 4: portability and relay (WP4, WP5)
 
 | # | Repo | WP | PR | Done when |
 | --- | --- | --- | --- | --- |
-| 28 | soul-runtime | WP5 | **Coordinated move and fork** with transfer records | T15; P5, P6 |
-| 29 | daemon | WP2 | **macOS protected profile** (per-member accounts plus a sandbox; HQ in its own account) | Same hostile-member suite as Linux |
-| 30 | comms | WP4 | **Relay mode:** site relay, then cloud relay. The crypto profile stays a candidate, and public federation stays off, until it is reviewed (Q8) | T12, T13 |
+| 28 | agent-bot-daemon, soul-package | WP5 | **Coordinated move and fork** with transfer records | T15; P5, P6 |
+| 29 | agent-bot-daemon | WP2 | **macOS protected profile** (per-member accounts plus a sandbox; HQ in its own account) | Same hostile-member suite as Linux |
+| 30 | agent-comms | WP4 | **Relay mode:** site relay, then cloud relay. The crypto profile stays a candidate, and public federation stays off, until it is reviewed (Q8) | T12, T13 |
 
 **Post-MVP:** the installation authority (partition-tolerant moves), hosted
 Souls (D3), mobile owner clients, exposed specialist endpoints, public
@@ -852,11 +866,14 @@ federation.
 
 D1–D4 were decided on 2026-10-27, after PR #2 merged (issue #1); D5–D7 on 2026-11-07. Each is tracked in this repository's [Decisions discussions](https://github.com/true-line/agent-bot-daemon/discussions/categories/decisions).
 
+These are this repository's decisions, and the platform's [decision log](https://github.com/true-line/agent-bot-platform/blob/main/docs/04-decisions/decision-log.md) cites them. A new decision that binds another repository is raised in the platform's [Decisions](https://github.com/true-line/agent-bot-platform/discussions/categories/decisions) category instead.
+
 - **D1. agent-bot-daemon is HQ. Accepted.** managed-machine stays the
   provisioner: it creates HQ's account and the member accounts. The
   follow-ups are:
-  - **0.4's component table and Appendix C:** updated by Grok in the draft
-    0.4.1 source;
+  - **0.4's component table and Appendix C:** no draft 0.4.1 exists
+    (DRIFT-015). The platform records this decision in PDR-0002 decision 3
+    and the repository catalog, and reads 0.4 together with PDR-0002;
   - **ADR-0645's `qwts/agent-identity` extraction:** retired by ADR-1183
     (qwts/agent-bot-identity#1194);
   - **ENG-0128:** its extraction amendment is replaced by ENG-0111
@@ -919,10 +936,11 @@ D1–D4 were decided on 2026-10-27, after PR #2 merged (issue #1); D5–D7 on 20
     operations are not reachable, because they need the presence
     signature. Per-member accounts (D7) close the rest for members; what
     stays in `user` is the owner and the owner's delegates (D7).
-  - **Repository home:** the target repositories are `true-line/*`
-    (`agent-bot-daemon`, `agent-bot-identity`, `agent-bot-soul`,
-    `agent-comms`, `agent-bot-machine`). Work lands in the current `qwts`
-    repositories and the owner transfers them.
+  - **Repository home:** the target account is `true-line`, as
+    [platform PDR-0002](https://github.com/true-line/agent-bot-platform/blob/main/docs/04-decisions/PDR-0002-repository-topology-and-admission.md) decision 7 now records, under the catalog's
+    names (agent-bot-daemon, agent-bot-identity, agent-bot-souls,
+    agent-comms, agent-bot-machine). Work lands in the current `qwts`
+    repositories, and the owner transfers them when no install breaks.
   - **Signing team:** for now the same Developer ID team that signs
     GeniusBar, `Z5DM34QS5U` (identifier `agent-bot-keyd`, confirmed with
     `codesign -dv` on 2026-10-31; hosts pin it as `settings.keydTeamId`);
@@ -941,8 +959,8 @@ D1–D4 were decided on 2026-10-27, after PR #2 merged (issue #1); D5–D7 on 20
 - **D5. The WP1 contracts live in `true-line/soul-contracts`, not in
   this repository. Accepted 2026-11-07.**
   §3.1 and §9 row 1 had put the WP1 schemas and fixtures here, while the
-  Soul Agent Platform repository plan (soul-contracts
-  `papers/repository-plan.md`, 2026-10-24) puts them in soul-contracts,
+  Soul Agent Platform repository plan (platform source S7,
+  [2026-10-24](https://github.com/true-line/agent-bot-platform/blob/main/docs/papers/repository-plan-2026-10-24.md)) puts them in soul-contracts,
   which already shipped `hq/v1` Hello and admission result. The two
   baselines were derived independently (agent-bot-daemon#59 here, and
   soul-contracts 0.2.0) and then merged into soul-contracts 0.3.0.
@@ -970,7 +988,7 @@ D1–D4 were decided on 2026-10-27, after PR #2 merged (issue #1); D5–D7 on 20
   - **Delegates stay in the owner's account.** Per-member accounts are for
     Soul members doing development work, which authenticate as their
     agent-bot bot identity. An agent the owner runs in their own `user`
-    account (for example Mason) is the owner's **delegate**. It has the
+    account is the owner's **delegate**. It has the
     owner's unbounded access, works on owner-level tasks rather than
     routine development, acts as the owner and says so when it posts, and
     where a delegate and another agent conflict the delegate generally takes
@@ -1018,18 +1036,23 @@ D1–D4 were decided on 2026-10-27, after PR #2 merged (issue #1); D5–D7 on 20
 
 ### 10.3 Risks
 
+Risks the whole platform shares are in the platform's
+[risk register](https://github.com/true-line/agent-bot-platform/blob/main/docs/10-program/risk-register.md): RISK-001 (vendor harnesses under strong
+enforcement), RISK-002 and RISK-003 (HQ concentrates authority; the identity
+service concentrates key custody), RISK-005 (the Linux protected profile
+versus macOS) and RISK-008 (two daemons during the strangler period). The
+risks below are this plan's own. Their IDs use the `HQ-RISK-` prefix so they
+do not collide with the requirements R1–R12 (DRIFT-010); the old label is in
+brackets.
+
 | ID | Risk | Mitigation |
 | --- | --- | --- |
-| R1 | Hub files: `agent-daemon.mjs` (2.4k lines), `readiness.mjs` (3.1k), `agent-population.mjs` (1.6k, 65 importers), `soul-runtimes.mjs` (1.5k) | Registries first (PRs 8–9) |
-| R2 | GitHub installation tokens are 1 h bearer tokens | They stay in HQ memory for brokered adapters only; device revoke revokes live tokens (PR 17) |
-| R3 | HQ concentrates authority on the host; the identity service concentrates key custody | 0.4 §4 mitigations: owner-unlock vault, per-owner encryption, issuance records, monitoring, revocation |
-| R4 | The Linux protected profile versus first users on macOS | macOS runs cooperative and says so; early macOS qualification (PR 29) |
-| R5 | Vendor harnesses may not work under strong enforcement | Adapters qualify one by one; honest route labels (R8) |
-| R6 | Two daemons during the strangler period | HQ supervises the old daemon behind explicit interfaces, and the old one is retired only after the shared suites pass |
-| R7 | GeniusBar, installed hooks and the Worker load modules by path | Shims for two or more releases; golden tests |
-| R8 | The domain move strands enrolled devices (`ServerSession.device()` refuses on a server mismatch) | A signed alias statement from the identity service, with `server enroll --force` as fallback; passkeys only on `agents.true-line.ai` |
-| R9 | Windows parity | Windows comes later in 0.4; keep agent-comms' Windows acceptance suite running against the broker |
-| R10 | agent-bot-identity is busy | Stage 0 happens in place; each repo split is a single cut |
+| HQ-RISK-01 (R1) | Hub files: `agent-daemon.mjs` (2.4k lines), `readiness.mjs` (3.1k), `agent-population.mjs` (1.6k, 65 importers), `soul-runtimes.mjs` (1.5k) | Registries first (PRs 8–9) |
+| HQ-RISK-02 (R2) | GitHub installation tokens are 1 h bearer tokens | They stay in HQ memory for brokered adapters only; device revoke revokes live tokens (PR 17) |
+| HQ-RISK-03 (R7) | GeniusBar, installed hooks and the Worker load modules by path | Shims for two or more releases; golden tests |
+| HQ-RISK-04 (R8) | The domain move strands enrolled devices (`ServerSession.device()` refuses on a server mismatch) | A signed alias statement from the identity service, with `server enroll --force` as fallback; passkeys only on `agents.true-line.ai` |
+| HQ-RISK-05 (R9) | Windows parity | Windows comes later in 0.4; keep agent-comms' Windows acceptance suite running against the broker |
+| HQ-RISK-06 (R10) | agent-bot-identity is busy | Stage 0 happens in place; each repo split is a single cut |
 
 ### 10.4 What changed from the first version of this plan
 
@@ -1047,6 +1070,14 @@ D1–D4 were decided on 2026-10-27, after PR #2 merged (issue #1); D5–D7 on 20
 ---
 
 ## Appendix A. Module inventory and dependency map
+
+**Stale.** The scan is pinned at agent-bot-identity `959daf9` (v0.13.0, 286
+runtime files). On 2026-11-07 its `main` was v0.15.17 with 301 runtime files.
+The table is refreshed when §9 PR 6 adds the target and domain columns to
+`runtime-modules.json`. The **Target** column names plugin destinations, not
+repositories: `soul-runtime/*` is agent-bot-souls (package and render code
+goes to soul-package), `comms` is agent-comms, and `identity` splits as §2.1
+describes.
 
 Generated from a static scan at the pinned commits. Shims are resolved to
 their targets. The **Domain** column uses the 0.4 trust domains: `HQ`,
