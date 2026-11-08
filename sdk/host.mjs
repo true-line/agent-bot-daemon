@@ -378,10 +378,11 @@ export function createHost({
   // socket; the serving plugin decides what the frame means.
   async function brokerAccept(kind, payload, { connection } = {}) {
     if (!['running', 'device_revoked'].includes(mode)) fail('host.not_running', `host is ${mode}`);
-    if (typeof kind !== 'string' || !KIND.test(kind)) fail('host.invalid_request', `kind ${JSON.stringify(kind)} must match ${KIND}`);
+    // With no broker running every frame gets the same answer, whatever its shape.
     const server = registries.servers.get(BROKER);
     if (!server) fail('host.no_broker', 'no plugin serves the broker');
     if (states.get(server.plugin)?.state !== 'running') fail('host.no_broker', `${server.plugin}, which serves the broker, is ${states.get(server.plugin)?.state}`);
+    if (typeof kind !== 'string' || !KIND.test(kind)) fail('host.invalid_request', `kind ${JSON.stringify(kind)} must match ${KIND}`);
     return server.accept(kind, structuredClone(payload), Object.freeze({ connection }));
   }
 

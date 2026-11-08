@@ -64,6 +64,15 @@ test('framing: strict JSON, known fields only, bounded lines', async () => {
     const res = await big.raw('x'.repeat(MAX_LINE_BYTES + 10));
     assert.equal(res.host_refusal.code, 'host.invalid_request');
     assert.match(res.host_refusal.explanation, /exceeds/);
+
+    // The same line with its newline, so the limit is met on the line itself
+    // rather than on an unterminated buffer; it never reaches dispatch.
+    for (const connect of [t.owner, t.entry, t.member]) {
+      const c = await connect();
+      const r = await c.raw(`{"id":1,"op":"status","payload":"${'x'.repeat(MAX_LINE_BYTES)}"}\n`);
+      assert.equal(r.host_refusal.code, 'host.invalid_request');
+      assert.match(r.host_refusal.explanation, /exceeds/);
+    }
   } finally { await t.done(); }
 });
 

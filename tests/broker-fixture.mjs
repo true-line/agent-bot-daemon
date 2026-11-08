@@ -6,7 +6,8 @@
 import { fail } from '../sdk/errors.mjs';
 import { definePlugin } from '../sdk/plugin.mjs';
 
-export function referenceBroker({ name = 'test-broker' } = {}) {
+// `beforeBind` lets a test hold a bind in flight.
+export function referenceBroker({ name = 'test-broker', beforeBind } = {}) {
   return definePlugin({
     name,
     version: '0.1.0',
@@ -19,6 +20,7 @@ export function referenceBroker({ name = 'test-broker' } = {}) {
         async accept(kind, message, { connection }) {
           if (kind === 'bind') {
             if (bound.has(connection)) fail('host.invalid_request', 'this connection is already bound');
+            if (beforeBind) await beforeBind();
             const b = await admission.verifyBinding(message);
             bound.set(connection, b.runtime_id);
             return { runtime_id: b.runtime_id, member_id: b.member_id, role: b.role };

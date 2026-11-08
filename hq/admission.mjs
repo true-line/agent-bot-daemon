@@ -278,7 +278,10 @@ export function admissionPlugin({ schemas, profileReasons = () => [] }) {
           }
           const bound = await store.tx((tx) => {
             const rt = tx.get('runtimes', runtimeId);
-            if (!rt || !sameBinding(rt.channel_binding, binding)) fail('caller_mismatch', `the channel binding does not match runtime ${runtimeId}`);
+            // An unknown runtime is compared against a same-length stand-in,
+            // so it costs what a wrong binding costs.
+            const matches = sameBinding(rt?.channel_binding ?? 'x'.repeat(binding.length), binding);
+            if (!rt || !matches) fail('caller_mismatch', `the channel binding does not match runtime ${runtimeId}`);
             current(rt, runtimeId, clock.now());
             return Object.freeze({ runtime_id: runtimeId, soul_id: rt.soul_id, member_id: rt.member_id, role: rt.role, installation_epoch: rt.epoch, lease_generation: rt.lease_generation });
           });

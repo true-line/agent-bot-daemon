@@ -125,11 +125,21 @@ export async function listenSocket({ path, auth, dispatch, core, newSession, end
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         if (!line.trim()) continue;
+        // A line and its newline can arrive in one chunk, so the limit is
+        // checked on every line, not only on an unterminated buffer.
+        if (Buffer.byteLength(line) > MAX_LINE_BYTES) {
+          send(respondError(new HostError('host.invalid_request', `request line exceeds ${MAX_LINE_BYTES} bytes`), null));
+          socket.end();
+          buf = '';
+          return;
+        }
         queue = queue.then(() => handle(line, session)).then(send, (e) => send(respondError(e, null)));
       }
     });
     socket.on('error', () => {});
-    socket.on('close', () => { conns.delete(socket); endSession(session); });
+    // The session ends after its queued requests finish, so a request still
+    // in flight (a broker bind, say) cannot recreate state after the end.
+    socket.on('close', () => { conns.delete(socket); queue = queue.then(() => endSession(session)).catch(() => {}); });
   });
 
   await new Promise((resolve, reject) => {

@@ -33,6 +33,8 @@ test('with no broker plugin running, every frame is refused', async () => {
   const none = createTestHost({ plugins: [] });
   await none.start();
   await assert.rejects(none.brokerAccept('bind', {}, { connection: 'bc_1' }), code('host.no_broker'));
+  // Whatever the frame's shape.
+  await assert.rejects(none.brokerAccept('Bad Kind', {}, { connection: 'bc_1' }), code('host.no_broker'));
 
   const broken = createTestHost({ plugins: [plugin('broker', async (ctx) => { ctx.broker.serve({ accept() {} }); }, { start: async () => { throw new Error('no'); } })] });
   await broken.start();
@@ -80,8 +82,8 @@ test('a closed connection reaches the serving plugin, and its failure does not',
 });
 
 // The real HQ, over broker.sock.
-async function setup() {
-  const t = await startHQ({ plugins: [referenceBroker()] });
+async function setup({ beforeBind } = {}) {
+  const t = await startHQ({ plugins: [referenceBroker({ beforeBind })] });
   const entry = await t.entry();
   const admitted = async (over = {}) => {
     const r = (await entry.request('Hello', hello(over))).result;
@@ -234,5 +236,24 @@ test('closing a connection drops its binding in the serving plugin', async () =>
     await m.close();
     for (let i = 0; i < 50 && broker.boundConnections() > 0; i += 1) await new Promise((r) => setImmediate(r));
     assert.equal(broker.boundConnections(), 0);
+  } finally { await t.done(); }
+});
+
+test('a connection that closes while its bind is in flight ends after the bind, leaving no binding', async () => {
+  let release;
+  let held;
+  const holding = new Promise((r) => { held = r; });
+  const t = await setup({ beforeBind: () => { held(); return new Promise((r) => { release = r; }); } });
+  try {
+    const broker = t.hq.host.provided('test-broker');
+    const m = await t.member();
+    m.raw(`${JSON.stringify({ id: 1, op: 'bind', payload: { runtime_id: t.lead.runtime_id, channel_binding: t.lead.channel_binding } })}\n`);
+    await holding;
+    await m.close();
+    for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
+    release();
+    for (let i = 0; i < 100; i += 1) await new Promise((r) => setImmediate(r));
+    assert.equal(t.hq.core.receipts.filter((r) => r.kind === 'hq.bind').length, 1, 'the bind ran');
+    assert.equal(broker.boundConnections(), 0, 'and closed() ran after it');
   } finally { await t.done(); }
 });
