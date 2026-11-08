@@ -9,9 +9,11 @@
 //   task-commitment (fail closed, inbound and outbound).
 // - Who commits. A member's request names its runtime; HQ looks the runtime
 //   up through hq-admission inside admission's own transaction, so a Hello
-//   that supersedes it cannot interleave. The caller is the connection, never
-//   a payload field; the runtime must be live, of the task's accountable
-//   Soul, at the current installation epoch and lease generation.
+//   that supersedes it cannot interleave. The caller is never a payload
+//   field: it is the admission connection, or, for a message the broker
+//   delivered (plan §4.9), the runtime the member's connection bound, which
+//   the request must name. The runtime must be live, of the task's
+//   accountable Soul, at the current installation epoch and lease generation.
 // - Proposals versus commitments (T20, R3). Only the current admitted lead
 //   commits. Anything a specialist sends, a final answer included, is
 //   recorded as a proposal and leaves the task unchanged; a proposal on a
@@ -29,12 +31,15 @@
 //   the payload claims. A peer offer stays peer data: it cannot carry a local
 //   grant, and nothing here creates a grant or a directive.
 //
-// Not here yet: budgets reservation on accept (§9 PR 19), the action ledger
-// and the `reconciling` state it drives (PR 19), owner-cleared waiting
-// reasons (approvals, PR 21) and broker delivery of the `task.offer` and
-// `task.commit` kinds (the broker, PR 16). The kinds are registered so the
-// broker finds them; until then other HQ plugins reach the service through
+// The broker delivers the `task.commit` kind with the bound runtime (§9 row
+// 13b). It also finds `task.offer`, which a member cannot send: an offer's
+// source is the owner, HQ or a peer Soul, and a member delivery carries none
+// of those, so it is refused. Other HQ plugins reach the service through
 // `ctx.deps['hq-tasks']`.
+//
+// Not here yet: budgets reservation on accept (§9 PR 19), the action ledger
+// and the `reconciling` state it drives (PR 19), and owner-cleared waiting
+// reasons (approvals, PR 21).
 import { definePlugin } from '../sdk/plugin.mjs';
 import { fail, HostError } from '../sdk/errors.mjs';
 import { canonicalDigest } from '../sdk/wire/canonical-json.mjs';
@@ -107,7 +112,7 @@ export function tasksPlugin({ schemas }) {
     async init(ctx) {
       const { store, receipts, clock, random, config } = ctx.services;
       const admission = ctx.deps['hq-admission'];
-      if (typeof admission?.withLiveRuntime !== 'function' || typeof admission?.withLeases !== 'function') throw new Error('hq-admission does not provide withLiveRuntime and withLeases');
+      for (const f of ['withLiveRuntime', 'withLeases', 'withBoundRuntime']) if (typeof admission?.[f] !== 'function') throw new Error(`hq-admission does not provide ${f}`);
       const concurrent = () => config.get('concurrentWriters') ?? [];
       const id = (prefix) => `${prefix}_${random.hex(8)}`;
       const iso = (ms) => new Date(ms).toISOString();
@@ -188,17 +193,23 @@ export function tasksPlugin({ schemas }) {
         });
       }
 
-      // A member's task/v1 commitment request. `session` is the protected
-      // connection it arrived on.
-      async function commit(request, { session } = {}) {
+      // A member's task/v1 commitment request. Exactly one of: `session`, the
+      // admission connection it arrived on, or `runtime_id`, the runtime the
+      // broker bound the member's connection to (§4.9).
+      async function commit(request, { session, runtime_id: bound } = {}) {
         const field = (k) => (typeof request?.[k] === 'string' ? { [k]: request[k] } : {});
-        const details = { ...field('operation_id'), ...field('task_id'), ...field('runtime_id'), caller: typeof session === 'string' && session ? session : 'unknown' };
+        const viaSession = typeof session === 'string' && session !== '';
+        const viaBroker = typeof bound === 'string' && bound !== '';
+        const caller = viaSession && !viaBroker ? session : viaBroker && !viaSession ? `runtime:${bound}` : undefined;
+        const details = { ...field('operation_id'), ...field('task_id'), ...field('runtime_id'), caller: caller ?? 'unknown' };
         return receipted('task.commit', details, () => {
-          if (typeof session !== 'string' || !session) fail('caller_mismatch', 'no authenticated connection for this request');
+          if (!caller) fail('caller_mismatch', 'no authenticated connection or bound runtime for this request');
           check('task-commitment', request, true);
+          if (viaBroker && request.runtime_id !== bound) fail('caller_mismatch', `the connection is bound to runtime ${bound}, not ${request.runtime_id}`);
           const digest = canonicalDigest({ op: 'commit', request });
-          return admission.withLiveRuntime(request.runtime_id, session, (rt) => store.tx((tx) => {
-          const prior = repeated(tx, request.operation_id, session, digest);
+          const withRuntime = viaBroker ? (fn) => admission.withBoundRuntime(bound, fn) : (fn) => admission.withLiveRuntime(request.runtime_id, session, fn);
+          return withRuntime((rt) => store.tx((tx) => {
+          const prior = repeated(tx, request.operation_id, caller, digest);
           if (prior) return { receipt: prior, fresh: false };
           if (request.installation_epoch !== rt.epoch) fail('stale_epoch', `runtime ${request.runtime_id} is at epoch ${rt.epoch}, not ${request.installation_epoch}`);
           if (request.lease_generation !== rt.lease_generation) fail('lease_expired', `runtime ${request.runtime_id} holds lease generation ${rt.lease_generation}, not ${request.lease_generation}`);
@@ -211,7 +222,7 @@ export function tasksPlugin({ schemas }) {
             const proposal = { proposal_id: id('prop'), task_id: task.task_id, operation_id: request.operation_id, member_id: rt.member_id, role: rt.role, runtime_id: request.runtime_id, transition: request.transition, evidence, task_revision: task.revision, task_status: task.status, at: iso(clock.now()) };
             const receipt = { contract: 'task/v1', receipt_id: id('trc'), operation_id: request.operation_id, task_id: task.task_id, outcome: 'proposal', proposal_id: proposal.proposal_id, status: task.status, revision: task.revision, by: rt.member_id, at: proposal.at };
             tx.put('proposals', proposal.proposal_id, proposal);
-            tx.put('operations', request.operation_id, { caller: session, digest, receipt });
+            tx.put('operations', request.operation_id, { caller, digest, receipt });
             return { receipt, fresh: true };
           }
 
@@ -237,7 +248,7 @@ export function tasksPlugin({ schemas }) {
             ...(to === 'running' ? { lease_generation: rt.lease_generation } : {}),
             ...(evidence.length ? { evidence: [...(task.evidence ?? []), ...evidence] } : {}),
           };
-          const receipt = transition(tx, task, { operationId: request.operation_id, caller: session, digest, expectedRevision: request.expected_revision, to, patch, by: rt.member_id });
+          const receipt = transition(tx, task, { operationId: request.operation_id, caller, digest, expectedRevision: request.expected_revision, to, patch, by: rt.member_id });
           return { receipt, fresh: true };
           }));
         });
@@ -318,7 +329,9 @@ export function tasksPlugin({ schemas }) {
         },
       });
       ctx.broker.registerKind({ kind: 'task.commit', schema: schemas['task-commitment'], consume: (message, meta) => commit(message, meta) });
-      ctx.broker.registerKind({ kind: 'task.offer', consume: (message, meta) => offer(message, meta) });
+      // A member delivery carries a runtime, never an offer source, so offer()
+      // refuses it (and receipts the refusal).
+      ctx.broker.registerKind({ kind: 'task.offer', consume: (message) => offer(message, {}) });
 
       return { provides: { offer, commit, wait, cancel, expire, get, list } };
     },

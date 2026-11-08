@@ -20,9 +20,13 @@
 //
 // It provides withLiveRuntime to the task service (hq-tasks), so a task
 // commit checks the runtime and commits without an admission in between.
+// For the member broker socket (plan §4.9) it provides verifyBinding, which
+// the broker plugin calls on a `bind` frame, and withBoundRuntime, which a
+// consumer uses for a message the broker delivered with its bound runtime.
 //
 // Equip carries no credentials yet: grants and credential references arrive
 // with §9 PRs 18 and 21. It hands out one opaque grant handle per member.
+import { timingSafeEqual } from 'node:crypto';
 import { definePlugin } from '../sdk/plugin.mjs';
 import { fail, HostError } from '../sdk/errors.mjs';
 import { canonicalDigest } from '../sdk/wire/canonical-json.mjs';
@@ -34,6 +38,15 @@ export const CURRENT_VERSIONS = Object.freeze({ hq: 1, wire: 1, task: 1 });
 export const SCHEMA_NAMES = Object.freeze(['hello', 'admission-result', 'equip', 'ready-and-lease-renewal']);
 const DEFAULT_LEASE_TTL_MS = 60_000;
 const RUNTIME_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+// hq/v1 admission-result admitted_runtimes[].channel_binding.
+const CHANNEL_BINDING = /^[A-Za-z0-9_-]{16,128}$/;
+
+// Compare two bindings without leaking where they differ.
+const sameBinding = (a, b) => {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+};
 
 const iso = (ms) => new Date(ms).toISOString();
 
@@ -157,14 +170,19 @@ export function admissionPlugin({ schemas, profileReasons = () => [] }) {
         return prior.result;
       }
 
+      // A runtime that is neither superseded nor past its lease, or the reason.
+      function current(rt, runtimeId, now) {
+        if (rt.superseded) fail('lease_expired', `runtime ${runtimeId} was superseded by a newer admission; send Hello again`);
+        if (now > rt.lease_expires_at) fail('lease_expired', `runtime ${runtimeId}'s lease expired at ${iso(rt.lease_expires_at)}; send Hello again`);
+        return rt;
+      }
+
       // Look up a live runtime for its caller, or refuse with the reason.
       function liveRuntime(tx, runtimeId, caller, now) {
         const rt = tx.get('runtimes', runtimeId);
         if (!rt) fail('host.invalid_request', `unknown runtime ${runtimeId}`);
         if (rt.caller !== caller) fail('caller_mismatch', `runtime ${runtimeId} was admitted to another connection`);
-        if (rt.superseded) fail('lease_expired', `runtime ${runtimeId} was superseded by a newer admission; send Hello again`);
-        if (now > rt.lease_expires_at) fail('lease_expired', `runtime ${runtimeId}'s lease expired at ${iso(rt.lease_expires_at)}; send Hello again`);
-        return rt;
+        return current(rt, runtimeId, now);
       }
 
       async function equip(payload, meta) {
@@ -246,7 +264,43 @@ export function admissionPlugin({ schemas, profileReasons = () => [] }) {
         const live = tx.list('runtimes').map(([, rt]) => rt).filter((rt) => !rt.superseded && now <= rt.lease_expires_at);
         return fn((soulId, generation) => live.some((rt) => rt.soul_id === soulId && rt.lease_generation === generation));
       });
-      return { provides: { withLiveRuntime, withLeases } };
+      // For the broker plugin (§4.9): does this binding speak for this live
+      // runtime? An unknown runtime and a wrong binding get the same answer,
+      // so a probe learns nothing about which runtimes exist. Receipted
+      // without the binding.
+      async function verifyBinding(input) {
+        const { runtime_id: runtimeId, channel_binding: binding } = input ?? {};
+        try {
+          if (!input || typeof input !== 'object' || Object.keys(input).length !== 2
+            || typeof runtimeId !== 'string' || !RUNTIME_ID.test(runtimeId)
+            || typeof binding !== 'string' || !CHANNEL_BINDING.test(binding)) {
+            fail('host.invalid_request', 'bind takes { runtime_id, channel_binding } from the admission result');
+          }
+          const bound = await store.tx((tx) => {
+            const rt = tx.get('runtimes', runtimeId);
+            // An unknown runtime is compared against a same-length stand-in,
+            // so it costs what a wrong binding costs.
+            const matches = sameBinding(rt?.channel_binding ?? 'x'.repeat(binding.length), binding);
+            if (!rt || !matches) fail('caller_mismatch', `the channel binding does not match runtime ${runtimeId}`);
+            current(rt, runtimeId, clock.now());
+            return Object.freeze({ runtime_id: runtimeId, soul_id: rt.soul_id, member_id: rt.member_id, role: rt.role, installation_epoch: rt.epoch, lease_generation: rt.lease_generation });
+          });
+          await receipts.append({ kind: 'hq.bind', runtime_id: runtimeId, soul_id: bound.soul_id, member_id: bound.member_id });
+          return bound;
+        } catch (e) {
+          if (e instanceof HostError) await receipts.append({ kind: 'hq.bind.refused', code: e.code, ...(typeof runtimeId === 'string' && RUNTIME_ID.test(runtimeId) ? { runtime_id: runtimeId } : {}) }).catch(() => {});
+          throw e;
+        }
+      }
+      // For a consumer of a brokered message: `fn(runtime)` on the live
+      // runtime the broker bound, in admission's queue, as withLiveRuntime.
+      // The binding was checked at bind; liveness is checked here, every time.
+      const withBoundRuntime = (runtimeId, fn) => store.tx(async (tx) => {
+        const rt = tx.get('runtimes', runtimeId);
+        if (!rt) fail('host.invalid_request', `unknown runtime ${runtimeId}`);
+        return fn(Object.freeze(current(rt, runtimeId, clock.now())));
+      });
+      return { provides: { withLiveRuntime, withLeases, verifyBinding, withBoundRuntime } };
     },
   });
 }

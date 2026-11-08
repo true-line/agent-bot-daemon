@@ -1,10 +1,11 @@
-// HQ's local sockets (plan §7.1, §7.2): the control socket for the owner and
-// the admission socket for Soul entry points. The auth class of a request is
+// HQ's local sockets (plan §7.1, §7.2, §4.9): the control socket for the
+// owner, the admission socket for Soul entry points, and the member broker
+// socket, whose frames go to the plugin serving the broker. The auth class of a request is
 // the socket it arrived on, never a field the client sends: an entry point
 // cannot reach owner operations by claiming to be the owner, and the owner's
 // client cannot send Hello on the control socket.
 //
-// Access control. Both sockets are Unix domain sockets created 0600 in HQ's
+// Access control. All three sockets are Unix domain sockets created 0600 in HQ's
 // 0700 state directory, so only HQ's own OS account can connect. Node has no
 // peer-credential API (getpeereid / SO_PEERCRED), so the skeleton relies on
 // the file mode. That is exact while HQ runs in the owner's account, which is
@@ -14,7 +15,7 @@
 // Windows named pipes are not built yet (#89); HQ refuses to start there.
 //
 // Framing: one JSON object per line (NDJSON), strictly parsed.
-//   request   {"id": <string|number>, "op": "<hq/v1 operation>", "payload": <any>}
+//   request   {"id": <string|number>, "op": "<hq/v1 operation, or a broker message kind>", "payload": <any>}
 //   result    {"id": ..., "ok": true, "result": <any>}
 //   refusal   {"id": ..., "ok": false, "refusal": <common/v1 error response>}
 //   host      {"id": ..., "ok": false, "host_refusal": {"code": "host.…", "explanation", "correlation_id"}}
@@ -124,11 +125,21 @@ export async function listenSocket({ path, auth, dispatch, core, newSession, end
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         if (!line.trim()) continue;
+        // A line and its newline can arrive in one chunk, so the limit is
+        // checked on every line, not only on an unterminated buffer.
+        if (Buffer.byteLength(line) > MAX_LINE_BYTES) {
+          send(respondError(new HostError('host.invalid_request', `request line exceeds ${MAX_LINE_BYTES} bytes`), null));
+          socket.end();
+          buf = '';
+          return;
+        }
         queue = queue.then(() => handle(line, session)).then(send, (e) => send(respondError(e, null)));
       }
     });
     socket.on('error', () => {});
-    socket.on('close', () => { conns.delete(socket); endSession(session); });
+    // The session ends after its queued requests finish, so a request still
+    // in flight (a broker bind, say) cannot recreate state after the end.
+    socket.on('close', () => { conns.delete(socket); queue = queue.then(() => endSession(session)).catch(() => {}); });
   });
 
   await new Promise((resolve, reject) => {

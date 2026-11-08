@@ -50,6 +50,8 @@ export const HOST_CODES = Object.freeze([
   'host.duplicate_registration',
   'host.registration_closed',
   'host.unknown_operation',
+  'host.unknown_kind',
+  'host.no_broker',
   'host.auth_mismatch',
   'host.undeclared_service',
   'host.route_not_allowed',

@@ -40,7 +40,7 @@ assert.ok(r.ok, JSON.stringify(r.results.filter((x) => !x.ok)));
 | `plugin.mjs` | `definePlugin` and manifest validation. Unknown fields are refused. | §4.1 |
 | `declarations.mjs` | Tool and command declarations for `ctx.tools.register` and `ctx.commands.register`. Unknown fields are refused. | §4.2.1, §4.2.2 |
 | `operations.mjs` | The `hq/v1` operations, the auth class of each, and the safe-mode and admission sets. | §4.2, §7.3 |
-| `host.mjs` | `createHost`: resolve, identity-first bootstrap in HQ core (device status from the signer; `status`, `device.status` and `device.enroll` answered by core), init and start in dependency order, stop in reverse order under a deadline, registration, and `dispatch` with auth. | §4.2, §4.4 |
+| `host.mjs` | `createHost`: resolve, identity-first bootstrap in HQ core (device status from the signer; `status`, `device.status` and `device.enroll` answered by core), init and start in dependency order, stop in reverse order under a deadline, registration, `dispatch` with auth, and the member broker: one plugin serves it (`ctx.broker.serve`), HQ core hands it frames (`brokerAccept`, `brokerClosed`), and it delivers to a kind's consumer with the bound runtime (`ctx.broker.deliver`). | §4.2, §4.4, §4.9 |
 | `services.mjs` | The host services in memory: store, credentials, identityService, approvals, budgets, launch, events, receipts, log, config, clock, random and profile. | §4.3 |
 | `test-host.mjs` | `createTestHost`, which adds a fake identity service with Ed25519-signed canned responses, a fake signer, a deterministic clock and random, and fake member principals. | §4.6 |
 | `conformance.mjs` | `checkPlugin`, the plugin conformance suite. | §4.6 |

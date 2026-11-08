@@ -21,6 +21,8 @@ import { bindServices, createCore, dropSubscriptions, dropTokens, DEVICE_STATES,
 import { parseStrict } from './wire/strict-json.mjs';
 
 const KIND = /^[a-z][a-z0-9_.-]{0,63}$/;
+const RUNTIME_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const BROKER = 'broker';
 const ADAPTER_CLASSES = ['inference', 'service'];
 // Operations HQ core answers itself; a plugin registering one is refused.
 const CORE_OPERATIONS = Object.freeze({ status: 'hq', 'device.status': 'hq', 'device.enroll': 'hq' });
@@ -53,7 +55,7 @@ export function createHost({
     byName.set(p.name, p);
   }
 
-  const registries = { hq: new Map(), kinds: new Map(), adapters: new Map(), tools: new Map(), commands: new Map(), hooks: new Map(), probes: new Map() };
+  const registries = { hq: new Map(), servers: new Map(), kinds: new Map(), adapters: new Map(), tools: new Map(), commands: new Map(), hooks: new Map(), probes: new Map() };
   const states = new Map();      // name → { state, reason }
   const provided = new Map();    // name → provides object
   const contexts = new Map();
@@ -159,6 +161,27 @@ export function createHost({
           if (typeof kind !== 'string' || !KIND.test(kind)) fail('host.invalid_request', `${name}: kind ${JSON.stringify(kind)} must match ${KIND}`);
           fn(consume, `${kind} consume`);
           register(registries.kinds, name, kind, { kind, schema, consume }, 'message kind', lease);
+        },
+        // The member broker socket (§4.9): one plugin serves it. HQ core
+        // hands it every frame, and calls `closed(connection)` when a
+        // connection ends so the plugin can drop that connection's binding.
+        serve({ accept, closed } = {}) {
+          fn(accept, 'broker accept');
+          if (closed !== undefined) fn(closed, 'broker closed');
+          register(registries.servers, name, BROKER, { accept, closed }, 'broker server', lease);
+        },
+        // Hand a message to the kind's consumer with the bound runtime. Only
+        // the serving plugin, only while the host runs; the consumer gets the
+        // runtime ID and nothing of the connection or its binding.
+        async deliver(kind, message, { runtime_id: runtimeId } = {}) {
+          if (!lease.live) fail('host.context_revoked', `${name}: this context is no longer live (${lease.why})`);
+          if (registries.servers.get(BROKER)?.plugin !== name) fail('host.auth_mismatch', `${name}: only the plugin serving the broker delivers`);
+          if (!['running', 'device_revoked'].includes(mode) || states.get(name)?.state !== 'running') fail('host.not_running', `${name}: delivery needs a running host and plugin`);
+          if (typeof runtimeId !== 'string' || !RUNTIME_ID.test(runtimeId)) fail('host.invalid_request', `${name}: delivery names the bound runtime_id`);
+          const reg = typeof kind === 'string' ? registries.kinds.get(kind) : undefined;
+          if (!reg) fail('host.unknown_kind', `no plugin consumes ${JSON.stringify(kind)}`, { kind });
+          if (states.get(reg.plugin)?.state !== 'running') fail('host.plugin_degraded', `${reg.plugin} is ${states.get(reg.plugin)?.state}`, { plugin: reg.plugin, ...states.get(reg.plugin) });
+          return reg.consume(structuredClone(message), Object.freeze({ runtime_id: runtimeId }));
         },
         registerAdapter({ id, class: cls, validate, call, lookup } = {}) {
           str(id, 'adapter id');
@@ -351,6 +374,26 @@ export function createHost({
     return { enrolled: true, restart: true, ...(result ?? {}) };
   }
 
+  // A frame on the member broker socket (§4.9). The auth class is the
+  // socket; the serving plugin decides what the frame means.
+  async function brokerAccept(kind, payload, { connection } = {}) {
+    if (!['running', 'device_revoked'].includes(mode)) fail('host.not_running', `host is ${mode}`);
+    // With no broker running every frame gets the same answer, whatever its shape.
+    const server = registries.servers.get(BROKER);
+    if (!server) fail('host.no_broker', 'no plugin serves the broker');
+    if (states.get(server.plugin)?.state !== 'running') fail('host.no_broker', `${server.plugin}, which serves the broker, is ${states.get(server.plugin)?.state}`);
+    if (typeof kind !== 'string' || !KIND.test(kind)) fail('host.invalid_request', `kind ${JSON.stringify(kind)} must match ${KIND}`);
+    return server.accept(kind, structuredClone(payload), Object.freeze({ connection }));
+  }
+
+  // A broker connection ended. The serving plugin's cleanup never fails the
+  // socket.
+  async function brokerClosed(connection) {
+    const server = registries.servers.get(BROKER);
+    if (!server?.closed) return;
+    try { await server.closed(connection); } catch { /* the plugin's own state; nothing to refuse */ }
+  }
+
   // Entry-point frames arrive as text: strict parsing first (duplicate keys
   // and malformed JSON are refused before any handler sees them).
   const dispatchJson = async (op, text, meta = {}) => dispatch(op, { ...meta, payload: parseStrict(text) });
@@ -359,6 +402,7 @@ export function createHost({
     const list = (r, f) => [...r.values()].map(f).sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     return {
       hq: list(registries.hq, (v) => ({ key: v.op, auth: v.auth, plugin: v.plugin })),
+      servers: [...registries.servers.entries()].map(([key, v]) => ({ key, plugin: v.plugin })),
       kinds: list(registries.kinds, (v) => ({ key: v.kind, plugin: v.plugin })),
       adapters: list(registries.adapters, (v) => ({ key: v.id, class: v.class, plugin: v.plugin })),
       tools: list(registries.tools, (v) => ({ key: v.tool.name, plugin: v.plugin })),
@@ -377,7 +421,7 @@ export function createHost({
   }
 
   return Object.freeze({
-    start, stop, status, dispatch, dispatchJson, registrations, readiness,
+    start, stop, status, dispatch, dispatchJson, brokerAccept, brokerClosed, registrations, readiness,
     core,
     provided: (name) => provided.get(name),
     get mode() { return mode; },

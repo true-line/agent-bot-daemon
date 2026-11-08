@@ -86,7 +86,7 @@ async function main(argv) {
     } finally {
       starting = false;
     }
-    console.log(`listening: ${hq.paths.control} (owner), ${hq.paths.admission} (entry points)`);
+    console.log(`listening: ${hq.paths.control} (owner), ${hq.paths.admission} (entry points), ${hq.paths.broker} (members)`);
     return;
   }
   if (args.cmd === 'status' || args.cmd === 'souls') {
