@@ -1064,6 +1064,7 @@ brackets.
 | HQ-RISK-04 (R8) | The domain move strands enrolled devices (`ServerSession.device()` refuses on a server mismatch) | A signed alias statement from the identity service, with `server enroll --force` as fallback; passkeys only on `agents.true-line.ai` |
 | HQ-RISK-05 (R9) | Windows parity | Windows comes later in 0.4; keep agent-comms' Windows acceptance suite running against the broker |
 | HQ-RISK-06 (R10) | agent-bot-identity is busy | Stage 0 happens in place; each repo split is a single cut |
+| HQ-RISK-07 | Until agent-bot-machine creates `_agent-bot-hq` (D6, its S6 slice), HQ runs in the owner's `user` account. D4's stated residual risk then covers HQ too: any `user` process, members included, can read HQ's store and reach its sockets, which the file mode alone guards | HQ reports `managed-cooperative` and names the account. The skeleton holds no credentials, grants or keys. A peer-credential check replaces the file mode before HQ moves accounts ([hq/README.md](../hq/README.md)) |
 
 ### 10.4 What changed from the first version of this plan
 

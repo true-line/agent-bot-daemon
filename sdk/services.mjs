@@ -120,10 +120,13 @@ export function fakeSigner({ device = 'enrolled' } = {}) {
 
 // State shared by every plugin's services inside one host. The host owns it;
 // plugins only reach it through their bound services.
-export function createCore({ clock = testClock(), random = testRandom(), profile = 'managed-cooperative', config = {}, identity = fakeIdentityService(), signer = fakeSigner(), budgets = {} } = {}) {
+// `persist`, when given, is called after every committed write (store
+// transaction, blob, receipt) and must make the state durable; HQ passes its
+// file store (hq/store.mjs). A persist that throws rolls the write back.
+export function createCore({ clock = testClock(), random = testRandom(), profile = 'managed-cooperative', config = {}, identity = fakeIdentityService(), signer = fakeSigner(), budgets = {}, persist } = {}) {
   if (!PROFILES.includes(profile)) throw new TypeError(`profile is one of ${PROFILES}`);
   const core = {
-    clock, random, profile, identity, signer,
+    clock, random, profile, identity, signer, persist,
     config: deepFreeze(clone(config)),
     tables: new Map(),          // `${plugin}\0${table}` → Map(key → value)
     blobs: new Map(),           // `${plugin}\0${digest}` → Buffer
@@ -178,8 +181,28 @@ export function revokeDevice(core, why = 'identity service reported the device r
   if (core.deviceRevoked) return;
   core.deviceRevoked = true;
   dropTokens(core);
-  core.receipts.push({ seq: core.receipts.length + 1, at: core.clock.now(), plugin: 'hq', profile: core.profile, kind: 'device.revoked', reason: why });
+  // Revocation takes effect in memory at once; the receipt's durability
+  // follows. A failed persist is logged, never allowed to undo the revocation.
+  pushReceipt(core, { plugin: 'hq', kind: 'device.revoked', reason: why }).catch((e) => {
+    core.logs.push({ level: 'error', plugin: 'hq', at: core.clock.now(), message: `receipt not persisted: ${e?.message ?? e}` });
+  });
   for (const cb of core.onDeviceRevoked) cb(why);
+}
+
+// Append an HQ receipt (sequence, time and profile added here) and make it
+// durable. If persisting fails the receipt is removed and the error raised.
+export async function pushReceipt(core, record) {
+  const r = { ...record, seq: core.receipts.length + 1, at: core.clock.now(), profile: core.profile };
+  core.receipts.push(r);
+  if (!core.persist) return r;
+  try {
+    await core.persist();
+  } catch (e) {
+    const i = core.receipts.lastIndexOf(r);
+    if (i !== -1) core.receipts.splice(i, 1);
+    throw e;
+  }
+  return r;
 }
 
 // Run an identity-service interaction and map a revoked answer onto HQ's
@@ -225,7 +248,18 @@ function storeService(core, plugin) {
       delete: (table, key) => { noInitWrite(); wrote = true; return view(table).delete(key); },
     });
     const result = await fn(tx);
-    if (wrote) for (const [key, rows] of staged) core.tables.set(key, rows);
+    if (wrote) {
+      const before = new Map([...staged.keys()].map((key) => [key, core.tables.get(key)]));
+      for (const [key, rows] of staged) core.tables.set(key, rows);
+      if (core.persist) {
+        try {
+          await core.persist();
+        } catch (e) {
+          for (const [key, rows] of before) { if (rows === undefined) core.tables.delete(key); else core.tables.set(key, rows); }
+          throw e;
+        }
+      }
+    }
     return result;
   }
   return Object.freeze({
@@ -239,7 +273,12 @@ function storeService(core, plugin) {
         noInitWrite();
         const buf = Buffer.from(bytes);
         const digest = `sha256:${createHash('sha256').update(buf).digest('hex')}`;
-        core.blobs.set(`${plugin}\0${digest}`, buf);
+        const key = `${plugin}\0${digest}`;
+        const existed = core.blobs.has(key);
+        core.blobs.set(key, buf);
+        if (core.persist && !existed) {
+          try { await core.persist(); } catch (e) { core.blobs.delete(key); throw e; }
+        }
         return digest;
       },
       async get(digest) {
@@ -487,8 +526,7 @@ function receiptsService(core, plugin) {
     async append(record) {
       refuseInInit(core, plugin, 'append receipts');
       if (!record || typeof record !== 'object' || Array.isArray(record)) fail('host.invalid_request', 'a receipt is an object');
-      const r = { ...redact(core, record), seq: core.receipts.length + 1, at: core.clock.now(), plugin, profile: core.profile };
-      core.receipts.push(r);
+      const r = await pushReceipt(core, { ...redact(core, record), plugin });
       return r.seq;
     },
   });

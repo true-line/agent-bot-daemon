@@ -6,9 +6,11 @@ enforces grants and hosts the broker. Its charter is the
 in true-line/agent-bot-platform, the product source of truth. Agents start at
 [AGENTS.md](AGENTS.md).
 
-Status: stage 0 under the planning umbrella
+Status: stage 1 under the planning umbrella
 ([#1](https://github.com/true-line/agent-bot-daemon/issues/1)). Start at
-[docs/daemon-plugin-split.md](docs/daemon-plugin-split.md) §9.
+[docs/daemon-plugin-split.md](docs/daemon-plugin-split.md) §9. The plugin
+SDK is in [sdk/](sdk/README.md); the HQ skeleton, which runs beside the
+existing daemon, is in [hq/](hq/README.md).
 
 ## Contracts
 
