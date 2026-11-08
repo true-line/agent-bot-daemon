@@ -146,6 +146,17 @@ export function createHQ({
     }
   }
 
+  // The task deadline sweep (hq/tasks.mjs), on the same interval as the
+  // legacy probe. A failed sweep is logged and retried on the next pass.
+  async function sweepTasks() {
+    const tasks = host.mode === 'running' ? host.provided('hq-tasks') : undefined;
+    if (!tasks) return [];
+    try { return await tasks.expire(); } catch (e) {
+      core.logs.push({ level: 'warn', plugin: 'hq', at: clock.now(), message: `task sweep failed: ${e.message}` });
+      return [];
+    }
+  }
+
   async function start() {
     if (running) throw new Error('HQ is already running');
     ensurePrivateDir(home, { uid });
@@ -228,7 +239,7 @@ export function createHQ({
     // slow, and HQ answers status before it finishes (legacy state "unknown").
     firstTick = legacyTick();
     const every = cfg.legacy?.probeIntervalMs ?? DEFAULT_PROBE_MS;
-    timer = setInterval(() => { legacyTick(); }, every);
+    timer = setInterval(() => { legacyTick(); sweepTasks(); }, every);
     timer.unref?.();
     return host.status();
   }
@@ -252,6 +263,7 @@ export function createHQ({
     paths,
     status: () => host.status(),
     legacyTick,
+    sweepTasks,
     // Resolves when the first legacy pass after start has finished.
     settled: () => firstTick,
     get host() { return host; },

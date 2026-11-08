@@ -238,7 +238,15 @@ export function admissionPlugin({ schemas, profileReasons = () => [] }) {
       // decides. `fn` may open its own plugin's transaction; it must not call
       // back into admission.
       const withLiveRuntime = (runtimeId, caller, fn) => store.tx(async (tx) => fn(Object.freeze(liveRuntime(tx, runtimeId, caller, clock.now()))));
-      return { provides: { withLiveRuntime } };
+      // For the task deadline sweep: `fn(held)` inside the same queue, where
+      // held(soulId, generation) says whether a live runtime of that Soul
+      // still holds that lease generation.
+      const withLeases = (fn) => store.tx(async (tx) => {
+        const now = clock.now();
+        const live = tx.list('runtimes').map(([, rt]) => rt).filter((rt) => !rt.superseded && now <= rt.lease_expires_at);
+        return fn((soulId, generation) => live.some((rt) => rt.soul_id === soulId && rt.lease_generation === generation));
+      });
+      return { provides: { withLiveRuntime, withLeases } };
     },
   });
 }

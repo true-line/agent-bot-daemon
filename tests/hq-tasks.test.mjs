@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { admissionPlugin } from '../hq/admission.mjs';
 import { validateConfig } from '../hq/hq.mjs';
-import { scopeOverlap, tasksPlugin } from '../hq/tasks.mjs';
+import { deadlineMs, overlapAllowed, scopeOverlap, tasksPlugin } from '../hq/tasks.mjs';
 import { createTestHost } from '../sdk/test-host.mjs';
 import { validate } from '../sdk/wire/schema.mjs';
 import { DIGEST, fixture, hello, schemas, SOUL, startHQ } from './hq-harness.mjs';
@@ -219,6 +219,17 @@ test('accepting a task whose write scope overlaps an active one is write_scope_c
   await allowed.commit(allowed.lead, x, 'accepted');
   await allowed.commit(allowed.lead, y, 'accepted');
 
+  // An overlap anywhere within an allowed workspace is allowed, nested paths included.
+  const z = await allowed.offer({ write_scope: ['workspace:shared/sub'] });
+  await allowed.commit(allowed.lead, z, 'accepted');
+  const outside = await allowed.offer({ write_scope: ['workspace:scratch'] });
+  await allowed.commit(allowed.lead, outside, 'accepted');
+  const clash = await allowed.offer({ write_scope: ['workspace:scratch/sub'] });
+  await assert.rejects(allowed.commit(allowed.lead, clash, 'accepted'), code('write_scope_conflict'));
+  assert.equal(overlapAllowed(['w:shared', 'w:shared/a/b'], ['w:shared']), true);
+  assert.equal(overlapAllowed(['w:shared/a', 'w:shared/a/b'], ['w:shared/a/b']), false, 'the outer entry is not within the allowed one');
+  assert.equal(overlapAllowed(['w:sharedx', 'w:sharedx'], ['w:shared']), false);
+
   assert.deepEqual(scopeOverlap(['a/b'], ['a/b/c']), ['a/b', 'a/b/c']);
   assert.equal(scopeOverlap(['a/b'], ['a/bc']), undefined);
   assert.equal(scopeOverlap(undefined, ['a']), undefined);
@@ -270,6 +281,44 @@ test('the deadline sweep expires offers, and accepted or waiting tasks without a
   assert.deepEqual(await t.tasks.expire(), [], 'an expired task does not expire twice');
 });
 
+test('a waiting task expires only once no live lease holds it, and a leap-second deadline is a real instant', async () => {
+  const t = await setup();
+  let task = await t.offer({ deadline: '2026-01-01T00:00:30Z' });
+  await t.commit(t.lead, task, 'accepted');
+  await t.commit(t.lead, (task = await t.record(task.task_id)), 'running');
+  task = await t.record(task.task_id);
+  await t.tasks.wait({ task_id: task.task_id, expected_revision: task.revision, operation_id: 'wait_lease', reason: 'dependency' }, { from: { kind: 'hq' } });
+  t.host.clock.advance(31_000);
+  assert.deepEqual(await t.tasks.expire(), [], 'past its deadline, but the lead\'s lease still holds it');
+  t.host.clock.advance(30_000); // the 60 s lease lapses
+  assert.deepEqual((await t.tasks.expire()).map((r) => r.task_id), [task.task_id]);
+  assert.equal((await t.record(task.task_id)).status, 'expired');
+
+  assert.equal(deadlineMs('2026-12-31T23:59:60Z'), Date.parse('2027-01-01T00:00:00Z'));
+  assert.equal(deadlineMs('2026-12-31T23:59:60.5+00:00'), Date.parse('2027-01-01T00:00:00.5Z'));
+  const leap = await t.offer({ deadline: '2026-01-01T23:59:60Z', write_scope: ['w:leap'] });
+  assert.deepEqual(await t.tasks.expire(), [], 'not due yet');
+  assert.equal((await t.record(leap.task_id)).status, 'offered');
+});
+
+test('every refusal is receipted, malformed requests included', async () => {
+  const t = await setup();
+  const task = await t.offer();
+  await assert.rejects(t.tasks.commit({ ...t.request(t.lead, task, 'accepted'), transition: 'finish' }, { session: t.lead.session }), code('host.invalid_request'));
+  await assert.rejects(t.tasks.commit(t.request(t.lead, task, 'accepted'), {}), code('caller_mismatch'));
+  await assert.rejects(t.tasks.commit(null, { session: t.lead.session }), code('host.invalid_request'));
+  await assert.rejects(t.tasks.offer({ operation_id: 'o_bad', objective: 'x' , extra: 1 }, { from: { kind: 'owner' } }), code('host.invalid_request'));
+  await assert.rejects(t.tasks.offer({ operation_id: 'o_nobody', objective: 'x', done_criteria: 'y', accountable_soul: SOUL }, {}), code('host.invalid_request'));
+  await assert.rejects(t.tasks.wait({ task_id: task.task_id, expected_revision: 0, operation_id: 'w_bad', reason: 'bored' }, { from: { kind: 'hq' } }), code('host.invalid_request'));
+  await assert.rejects(t.tasks.cancel({ task_id: task.task_id, expected_revision: 0, operation_id: 'c_bad' }, { from: { kind: 'peer', soul: PEER } }), code('host.invalid_request'));
+  const refused = t.host.receipts().filter((r) => r.kind.endsWith('.refused')).map((r) => [r.kind, r.code]);
+  assert.deepEqual(refused, [
+    ['task.commit.refused', 'host.invalid_request'], ['task.commit.refused', 'caller_mismatch'], ['task.commit.refused', 'host.invalid_request'],
+    ['task.offer.refused', 'host.invalid_request'], ['task.offer.refused', 'host.invalid_request'],
+    ['task.wait.refused', 'host.invalid_request'], ['task.cancel.refused', 'host.invalid_request'],
+  ]);
+});
+
 test('commitment requests the contract refuses never reach the store', async () => {
   const t = await setup();
   const task = await t.offer();
@@ -292,6 +341,11 @@ test('HQ runs the task service as a built-in plugin, and tasks persist in its st
     const res = await owner.request('tasks.list', {});
     assert.equal(res.ok, true, JSON.stringify(res));
     assert.deepEqual(res.result.map((x) => [x.task_id, x.status]), [[r.task_id, 'offered']]);
+
+    // HQ's periodic pass runs the deadline sweep.
+    const due = await t.hq.host.provided('hq-tasks').offer({ operation_id: 'durable_due', objective: 'x', done_criteria: 'y', accountable_soul: SOUL, deadline: '2026-11-01T00:00:00Z' }, { from: { kind: 'owner' } });
+    assert.deepEqual((await t.hq.sweepTasks()).map((x) => x.task_id), [due.task_id]);
+    assert.equal((await t.hq.host.provided('hq-tasks').get(due.task_id)).task.status, 'expired');
   } finally { await t.done(); }
 });
 
