@@ -10,8 +10,8 @@
 // the file mode. That is exact while HQ runs in the owner's account, which is
 // the interim layout (D4's stated risk; plan §10.3 HQ-RISK-07). When HQ moves
 // to its own account (D6) the owner's client connects from another account,
-// and a peer-credential check must replace the file mode before that move.
-// Windows named pipes are not built yet; HQ refuses to start there.
+// and a peer-credential check must replace the file mode before that move (#88).
+// Windows named pipes are not built yet (#89); HQ refuses to start there.
 //
 // Framing: one JSON object per line (NDJSON), strictly parsed.
 //   request   {"id": <string|number>, "op": "<hq/v1 operation>", "payload": <any>}
@@ -57,7 +57,7 @@ export function checkSocketPath(path, platform = process.platform) {
 }
 
 export async function listenSocket({ path, auth, dispatch, core, newSession, endSession }) {
-  if (process.platform === 'win32') throw new Error('HQ on Windows needs a named pipe with an owner DACL, which is not built yet');
+  if (process.platform === 'win32') throw new Error('HQ on Windows needs a named pipe with an owner DACL, which is not built yet (#89)');
   checkSocketPath(path);
   if (existsSync(path)) {
     if (!lstatSync(path).isSocket()) throw new Error(`${path} exists and is not a socket; refusing to replace it`);

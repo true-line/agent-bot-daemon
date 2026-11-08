@@ -53,8 +53,8 @@ store and connect to both sockets. The file mode is the only access check,
 because Node has no peer-credential API. HQ reports `managed-cooperative`
 and names the account as a reason. The skeleton holds no credentials, no
 grants and no signing key, so nothing it stores is a secret. This is
-HQ-RISK-07 in plan §10.3. Before HQ moves to its own account, a
-peer-credential check must replace the file mode.
+HQ-RISK-07 in plan §10.3. Moving HQ to its own account, with a
+peer-credential check and a service unit, is #88.
 
 ## Not in this slice
 
@@ -63,7 +63,8 @@ peer-credential check must replace the file mode.
 - The real signer and enrollment (§9 PR 15), the identity-service link (PRs
   10 and 18), grants and credential references in Equip (PRs 18 and 21), and
   `accept-revision` (PR 21).
-- Windows named pipes, and a launchd or systemd unit.
+- The HQ account, the peer-credential check and the service unit (#88,
+  after agent-bot-machine S6), and the Windows named pipe (#89).
 - A soul-contracts schema for the hq/v1 request envelope and for the
   Ready/Lease reply. The framing here is HQ's until soul-contracts specifies
   them.
