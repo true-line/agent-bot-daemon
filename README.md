@@ -1,7 +1,10 @@
 # agent-bot-daemon
 
-The host process for agent-bot. It owns the link to the agent-bot server and
-runs the identity, comms and soul-runtime plugins.
+HQ for the Soul Agent Platform: the one local authority that admits Souls,
+enforces grants and hosts the broker. Its charter is the
+[repository catalog entry](https://github.com/true-line/agent-bot-platform/blob/main/docs/03-architecture/repository-catalog.md#agent-bot-daemon)
+in true-line/agent-bot-platform, the product source of truth. Agents start at
+[AGENTS.md](AGENTS.md).
 
 Status: stage 0 under the planning umbrella
 ([#1](https://github.com/true-line/agent-bot-daemon/issues/1)). Start at
