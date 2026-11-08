@@ -68,10 +68,11 @@ export async function startHQ({ device = 'enrolled', daemon = 'running', supervi
   const clients = [];
   const owner = async () => { const c = await connectSocket(hq.paths.control); clients.push(c); return c; };
   const entry = async () => { const c = await connectSocket(hq.paths.admission); clients.push(c); return c; };
+  const member = async () => { const c = await connectSocket(hq.paths.broker); clients.push(c); return c; };
   const done = async ({ keep = false } = {}) => {
     for (const c of clients) await c.close().catch(() => {});
     await hq.stop();
     if (!keep) rmSync(home, { recursive: true, force: true });
   };
-  return { hq, home, status, legacy, clock, owner, entry, done };
+  return { hq, home, status, legacy, clock, owner, entry, member, done };
 }

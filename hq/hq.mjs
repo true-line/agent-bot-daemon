@@ -15,11 +15,12 @@
 //   store.json      the authoritative store (hq/store.mjs), 0600
 //   control.sock    hq/v1 for the owner, 0600
 //   admission.sock  hq/v1 for Soul entry points, 0600
+//   broker.sock     member broker frames, served by one plugin (§4.9), 0600
 //
 // Interim account (D4's stated risk, plan §10.3 HQ-RISK-07): until
 // agent-bot-machine provisions _agent-bot-hq (D6, its S6 slice), HQ runs in
 // the owner's `user` account, so any process there, members included, can
-// read the store and connect to both sockets. HQ reports managed-cooperative
+// read the store and connect to every socket. HQ reports managed-cooperative
 // and says why; the skeleton holds no credentials and no grants.
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -118,7 +119,7 @@ export function createHQ({
   let firstTick = Promise.resolve();
   let pluginLoad = [];
 
-  const paths = { home, control: join(home, 'control.sock'), admission: join(home, 'admission.sock') };
+  const paths = { home, control: join(home, 'control.sock'), admission: join(home, 'admission.sock'), broker: join(home, 'broker.sock') };
 
   function openSession() {
     const id = `os_${random.hex(12)}`;
@@ -164,7 +165,7 @@ export function createHQ({
     profileInfo = detectProfile({ platform, account, standalone: cfg.standalone === true });
     legacyRunner ??= legacyDaemon({ supervise: cfg.legacy?.supervise === true, clock });
 
-    if (platform !== 'win32') for (const p of [paths.control, paths.admission]) checkSocketPath(p, platform);
+    if (platform !== 'win32') for (const p of [paths.control, paths.admission, paths.broker]) checkSocketPath(p, platform);
     store = openStore(home, { uid });
     core = createCore({
       clock, random, signer,
@@ -212,7 +213,7 @@ export function createHQ({
           version: HQ_VERSION,
           account,
           profileReasons: profileInfo.reasons,
-          sockets: { control: paths.control, admission: paths.admission, access: 'file mode 0600 in a 0700 directory (no peer-credential check yet)' },
+          sockets: { control: paths.control, admission: paths.admission, broker: paths.broker, access: 'file mode 0600 in a 0700 directory (no peer-credential check yet)' },
           ownerSessions: openOwnerSessions(),
           pluginLoad,
           ...(devPlugins ? { devPlugins } : {}),
@@ -226,6 +227,13 @@ export function createHQ({
       sockets = [
         await listenSocket({ path: paths.control, auth: 'owner', dispatch: host.dispatch, core, newSession: openSession, endSession: closeSession }),
         await listenSocket({ path: paths.admission, auth: 'entry-point', dispatch: host.dispatch, core, newSession: () => `ep_${random.hex(12)}`, endSession: () => {} }),
+        // Each frame goes to the plugin serving the broker; `op` is the kind.
+        await listenSocket({
+          path: paths.broker, auth: 'member', core,
+          dispatch: (kind, { payload, session }) => host.brokerAccept(kind, payload, { connection: session }),
+          newSession: () => `bc_${random.hex(12)}`,
+          endSession: (connection) => { host.brokerClosed(connection); },
+        }),
       ];
     } catch (e) {
       for (const s of sockets) await s.close();

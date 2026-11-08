@@ -1,10 +1,11 @@
-// HQ's local sockets (plan §7.1, §7.2): the control socket for the owner and
-// the admission socket for Soul entry points. The auth class of a request is
+// HQ's local sockets (plan §7.1, §7.2, §4.9): the control socket for the
+// owner, the admission socket for Soul entry points, and the member broker
+// socket, whose frames go to the plugin serving the broker. The auth class of a request is
 // the socket it arrived on, never a field the client sends: an entry point
 // cannot reach owner operations by claiming to be the owner, and the owner's
 // client cannot send Hello on the control socket.
 //
-// Access control. Both sockets are Unix domain sockets created 0600 in HQ's
+// Access control. All three sockets are Unix domain sockets created 0600 in HQ's
 // 0700 state directory, so only HQ's own OS account can connect. Node has no
 // peer-credential API (getpeereid / SO_PEERCRED), so the skeleton relies on
 // the file mode. That is exact while HQ runs in the owner's account, which is
@@ -14,7 +15,7 @@
 // Windows named pipes are not built yet (#89); HQ refuses to start there.
 //
 // Framing: one JSON object per line (NDJSON), strictly parsed.
-//   request   {"id": <string|number>, "op": "<hq/v1 operation>", "payload": <any>}
+//   request   {"id": <string|number>, "op": "<hq/v1 operation, or a broker message kind>", "payload": <any>}
 //   result    {"id": ..., "ok": true, "result": <any>}
 //   refusal   {"id": ..., "ok": false, "refusal": <common/v1 error response>}
 //   host      {"id": ..., "ok": false, "host_refusal": {"code": "host.…", "explanation", "correlation_id"}}

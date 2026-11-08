@@ -389,7 +389,7 @@ the set has resolved and every digest matches (§4.5).
 | Broker message kinds | `ctx.broker.registerKind({ kind, schema, consume })` | `directive` (HQ → Soul) and `query` (Soul → HQ) per 0.4 §5, plus plugin queries such as `credential.reference`, `grant.request` and `notices.take`. A peer can't acquire the `directive` kind through its text (T04). |
 | Brokered adapters | `ctx.broker.registerAdapter({ id, class: 'inference'\|'service', validate, call, lookup })` | Validates operation type, resource scope, redirects, resolved destination and payload class (0.4 §4). `lookup` supports reconciliation of `unknown` effects. |
 | Member surfaces | `ctx.tools.register(tool)`, `ctx.commands.register(cmd)` | MCP tools and CLI commands that members run in the Soul. They resolve to broker queries, never to direct authority. |
-| Broker hosting | `ctx.broker.serve({ accept })`, `ctx.broker.deliver(kind, message, { runtime_id })` | One plugin serves the member broker socket and delivers each message to the kind's consumer with the bound runtime (§4.9). |
+| Broker hosting | `ctx.broker.serve({ accept, closed })`, `ctx.broker.deliver(kind, message, { runtime_id })` | One plugin serves the member broker socket and delivers each message to the kind's consumer with the bound runtime (§4.9). |
 | Events | `ctx.events.publish/subscribe(type, payload)` | In process, at most once. Anything durable goes through the store. |
 | Readiness probes | `ctx.readiness.register(probe)` | Splits `readiness.mjs` (3.1k lines). |
 | Provided services | `return { provides: { … } }` | Dependents receive them as `ctx.deps[name]`. |
@@ -664,14 +664,16 @@ host side of that split.
   and `payload` carries the message. The auth class is `member`, taken from
   the socket, never from a field.
 - **One broker plugin.** A plugin serves the broker with
-  `ctx.broker.serve({ accept })`. At most one plugin may serve; a second is
-  `host.duplicate_registration`. HQ core hands every frame on `broker.sock`
-  to `accept(kind, message, { connection })`. With no broker plugin
-  running, every frame is refused.
+  `ctx.broker.serve({ accept, closed })`. At most one plugin may serve; a
+  second is `host.duplicate_registration`. HQ core hands every frame on
+  `broker.sock` to `accept(kind, message, { connection })` and calls
+  `closed(connection)` when a connection ends. With no broker plugin
+  running, every frame is `host.no_broker`.
 - **Binding a connection to a runtime.** A member's first frame is `bind`,
   carrying `{ runtime_id, channel_binding }` from its admission result. The
-  broker plugin asks hq-admission whether that runtime is live and the
-  binding matches. If it does, the connection speaks for that runtime until
+  broker plugin asks hq-admission (`verifyBinding`) whether that runtime is
+  live and the binding matches; an unknown runtime and a wrong binding are
+  both `caller_mismatch`. If it does, the connection speaks for that runtime until
   it closes, a newer admission supersedes the runtime, or the lease
   expires. Any other first frame, a wrong binding, or a second `bind` on
   the same connection is refused.
@@ -679,10 +681,12 @@ host side of that split.
   message to the plugin that registered the kind (§4.2). Only the serving
   plugin may call it, and only while the host is running. An unregistered
   kind is `host.unknown_kind`. The consumer receives the bound runtime ID,
-  never the connection or the binding, and authorizes by runtime: the task
-  service checks that the runtime is still live, of the task's Soul, at the
-  current epoch and lease generation, and that it is the runtime the
-  request names.
+  never the connection or the binding, and authorizes by runtime
+  (hq-admission's `withBoundRuntime`): the task service checks that the
+  runtime is still live, of the task's Soul, at the current epoch and lease
+  generation, and that it is the runtime the request names. A member's
+  `task.offer` is delivered and refused there, because an offer's source is
+  the owner, HQ or a peer Soul.
 - **What this does not claim.** In the cooperative profile a channel
   binding is a bearer secret in the member's environment, so a member that
   reads another member's binding can speak for it. HQ reports
