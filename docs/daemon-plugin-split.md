@@ -389,6 +389,7 @@ the set has resolved and every digest matches (§4.5).
 | Broker message kinds | `ctx.broker.registerKind({ kind, schema, consume })` | `directive` (HQ → Soul) and `query` (Soul → HQ) per 0.4 §5, plus plugin queries such as `credential.reference`, `grant.request` and `notices.take`. A peer can't acquire the `directive` kind through its text (T04). |
 | Brokered adapters | `ctx.broker.registerAdapter({ id, class: 'inference'\|'service', validate, call, lookup })` | Validates operation type, resource scope, redirects, resolved destination and payload class (0.4 §4). `lookup` supports reconciliation of `unknown` effects. |
 | Member surfaces | `ctx.tools.register(tool)`, `ctx.commands.register(cmd)` | MCP tools and CLI commands that members run in the Soul. They resolve to broker queries, never to direct authority. |
+| Broker hosting | `ctx.broker.serve({ accept })`, `ctx.broker.deliver(kind, message, { runtime_id })` | One plugin serves the member broker socket and delivers each message to the kind's consumer with the bound runtime (§4.9). |
 | Events | `ctx.events.publish/subscribe(type, payload)` | In process, at most once. Anything durable goes through the store. |
 | Readiness probes | `ctx.readiness.register(probe)` | Splits `readiness.mjs` (3.1k lines). |
 | Provided services | `return { provides: { … } }` | Dependents receive them as `ctx.deps[name]`. |
@@ -649,6 +650,49 @@ R2.
   permitted operations continue and outbound messages queue (R9, T13). If
   the identity service is down, notices wait in its queue (kept 7 days).
 
+### 4.9 The member broker socket (Stage 1)
+
+The owner decided on 2026-11-08 that agent-comms ships its broker mode as
+an HQ plugin and that HQ hosts it, so the Stage 1 entry point (§9 row 14)
+reaches the task service through the broker (row 13b). The catalog already
+gives the broker to agent-comms and its hosting to HQ; this section is the
+host side of that split.
+
+- **The socket.** HQ core opens `broker.sock` beside the control and
+  admission sockets: 0600 in HQ's 0700 state directory, with the same
+  strict NDJSON framing (§7.1). On this socket `op` names a message kind
+  and `payload` carries the message. The auth class is `member`, taken from
+  the socket, never from a field.
+- **One broker plugin.** A plugin serves the broker with
+  `ctx.broker.serve({ accept })`. At most one plugin may serve; a second is
+  `host.duplicate_registration`. HQ core hands every frame on `broker.sock`
+  to `accept(kind, message, { connection })`. With no broker plugin
+  running, every frame is refused.
+- **Binding a connection to a runtime.** A member's first frame is `bind`,
+  carrying `{ runtime_id, channel_binding }` from its admission result. The
+  broker plugin asks hq-admission whether that runtime is live and the
+  binding matches. If it does, the connection speaks for that runtime until
+  it closes, a newer admission supersedes the runtime, or the lease
+  expires. Any other first frame, a wrong binding, or a second `bind` on
+  the same connection is refused.
+- **Delivery.** `ctx.broker.deliver(kind, message, { runtime_id })` hands a
+  message to the plugin that registered the kind (§4.2). Only the serving
+  plugin may call it, and only while the host is running. An unregistered
+  kind is `host.unknown_kind`. The consumer receives the bound runtime ID,
+  never the connection or the binding, and authorizes by runtime: the task
+  service checks that the runtime is still live, of the task's Soul, at the
+  current epoch and lease generation, and that it is the runtime the
+  request names.
+- **What this does not claim.** In the cooperative profile a channel
+  binding is a bearer secret in the member's environment, so a member that
+  reads another member's binding can speak for it. HQ reports
+  `managed-cooperative` for that reason. Row 16 adds per-member service
+  identities and caller-bound handles, which is the T01 property; the
+  socket and the delivery interface stay.
+- **Routed messages.** A message between Souls is framed in wire/v1 at the
+  broker's delivery and relay layer (platform PDR-0024). Member queries on
+  `broker.sock` are local and are not routed messages.
+
 ## 5. Soul package (0.4 §11, [S4])
 
 The package format is the `soul-package-format` seam, provided by
@@ -883,6 +927,7 @@ repository that does the work; this repository tracks only its own rows.
 | --- | --- | --- | --- | --- |
 | 12 | agent-bot-daemon | WP2 | **HQ skeleton** in its own account: store, control socket with owner sessions, profile reporting, `hq/v1` Hello/Admit/Equip/Ready/Lease. It **supervises the existing daemon unchanged** (strangler). | HQ reports `managed cooperative` honestly; T14 |
 | 13 | agent-bot-daemon | WP4 | **Task service in HQ's store** (`task/v1`, CAS, operation keys, proposals versus commitments, write-scope exclusion), as the `task-v1` provider; agent-comms mirrors the records through its codec and carries directives and queries as broker kinds (platform PDR-0024) | T04, T05, T20 |
+| 13b | agent-bot-daemon, agent-comms | WP4 | **Broker host and broker plugin** (§4.9). agent-bot-daemon: the member broker socket, `ctx.broker.serve` and `ctx.broker.deliver`, and runtime binding by channel binding. agent-comms: broker mode as an HQ plugin that binds members and delivers `task.commit` and `task.offer`. Added by the owner on 2026-11-08 so row 14 reaches the task service through HQ. | A member bound by its channel binding commits a task over the broker socket; a wrong, reused or superseded binding is refused; T05 holds over the socket |
 | 14 | agent-bot-souls | WP3 | **Entry point** `agent-bot soul run`: ACP front door and terminal chat; lead plus specialist on fake adapters; role routing; handoff notes; recovery ladder | One task completes with scoped proposals and one final commitment |
 
 ### Stage 2a: member isolation (WP2)
