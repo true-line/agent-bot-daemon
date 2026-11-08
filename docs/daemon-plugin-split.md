@@ -124,8 +124,8 @@ destinations; the second column gives the catalog repository for each.
 | Appendix A target | Repository (catalog) | Files | Lines |
 | --- | --- | ---: | ---: |
 | `soul-runtime` (core, HQ side, entry point) | agent-bot-souls; package and render code to soul-package | 98 | 30,284 |
-| `daemon` (HQ core, member surfaces, CLI, SDK, org) | agent-bot-daemon | 63 | 22,393 |
-| `identity` | agent-bot-identity for the CLI, hooks and attribution; HQ authority to agent-bot-daemon core (PDR-0027) | 49 | 14,773 |
+| `daemon` (HQ core, HQ CLI, SDK, org) | agent-bot-daemon | 59 | 20,083 |
+| `identity` | agent-bot-identity for the CLI, hooks, attribution and member surfaces; HQ authority to agent-bot-daemon core (PDR-0027) | 53 | 17,083 |
 | `comms` (agent-bot side) | agent-comms | 14 | 4,087 |
 | `comms` (today's agent-comms) | agent-comms | 105 | 12,683 |
 | `identity service` | true-line/agent-bot | 9 | 2,258 |
@@ -145,7 +145,7 @@ section summarises it.
 | `identity` | HQ authority (enrollment, the identity-service link, device key and signer, grants, approvals, credential references) becomes part of HQ core in agent-bot-daemon, not a plugin (PDR-0027). The tools members run (gh shim, credential helper, git hooks) stay in agent-bot-identity on the Soul side and are cooperative-profile only; its HQ plugin registers only member surfaces (MCP tools, CLI commands, hook handlers) that resolve to broker queries. Key custody, secret stores and App management go to the identity service; the inbox is deprecated. |
 | `soul` | The Soul runtime, in three parts: `core/` (pure, used on both sides), `hq/` (validation, render, admission, launch, transfer) and `entry-point/` (front door, members, recovery). The entry point goes to agent-bot-souls, package validation, digests and render to soul-package, and adapter manifests to soul-adapters. |
 | `comms` | agent-comms: broker mode in HQ, client mode in the Soul. |
-| `host`, `cli` | agent-bot-daemon. The member-facing surfaces (`agent-bot mcp`, `reach-mcp`, the hook runner) run in the Soul and only ask HQ. |
+| `host`, `cli` | agent-bot-daemon: the host, the HQ CLI and owner commands. The member-facing surfaces (`agent-bot mcp`, `reach-mcp`, the hook runner, the commands members run) go to agent-bot-identity, which the platform's repository catalog says owns them (PDR-0027). They run in the Soul, register through `hq-plugin-contract`, and only ask HQ. |
 | `shared`, `harness` | `@agent-bot/sdk`, vendored by digest. Adapter manifests follow 0.4 §10. |
 | `org` | agent-bot-daemon `org/`. Per-soul SOP selection goes to soul-runtime core. |
 
@@ -1117,10 +1117,10 @@ Columns: **Now** is the ADR-0645 module; **Target** is the destination; **Domain
 | `agent-backfill.mjs` | 143 | soul | soul-runtime/core | HQ + Soul | fs, worktree | 1/1 | - | C1 |  |
 | `agent-bot.mjs` | 52 | cli | daemon | owner client | fs, worktree, comms | 3/0 | - |  |  |
 | `agent-daemon.mjs` | 2402 | host | daemon | HQ | fs, exec, worktree, keyd, comms, net, os-secret | 61/4 | `identity/identity-host` `agent-space` `soul-routes` `soul-history` `soul-memory` `agent-population` `soul-templates` `delegation-grants` `grant-github` `approval-action` `owner-action` `comms-membership` `comms-client` `agent-wake` `soul-mode` `identity-app-souls` `soul-profile` `soul-env` `sandbox` `soul-model` `cold-wake-settings` `daemon-launch` `team-start` `soul-home` `harness-auth` `wake-webhook` `acp-registry` `soul-package` `soul-env-migrate` `soul-runtimes` `soul-secrets` `soul-revisions` `wake-plane` `task-turns` `comms-relay` `soul-asides` `wake-resume` `skill-dream-service` `skill-dream-evidence` `soul-join` `soul-fork` | C5 | Becomes HQ (strangler, 0.4 §13). |
-| `agent-hook.mjs` | 602 | host | daemon | Soul | fs, exec, worktree, comms | 5/1 | `identity/identity-host` `confinement` `agent-population` |  | Hook runner in harness processes; cooperative checks. |
+| `agent-hook.mjs` | 602 | host | identity | Soul | fs, exec, worktree, comms | 5/1 | `identity/identity-host` `confinement` `agent-population` |  | Hook runner in harness processes; cooperative checks. |
 | `agent-interaction.mjs` | 980 | host | daemon | HQ | fs, comms | 5/2 | `identity/identity-host` `agent-population` `soul-asides` |  |  |
 | `agent-jobs.mjs` | 1180 | host | daemon | HQ | fs | 3/6 | - |  |  |
-| `agent-mcp.mjs` | 505 | host | daemon | Soul | fs, exec, worktree | 3/0 | `identity/identity-host` |  | `agent-bot mcp` runs as an MCP server inside the Soul; asks HQ. |
+| `agent-mcp.mjs` | 505 | host | identity | Soul | fs, exec, worktree | 3/0 | `identity/identity-host` |  | `agent-bot mcp` runs as an MCP server inside the Soul; asks HQ. |
 | `agent-population.mjs` | 1644 | soul | soul-runtime/core | HQ + Soul | fs, worktree, comms | 9/65 | - | C1 |  |
 | `agent-space-pack.mjs` | 382 | soul | soul-runtime/hq | HQ | fs, worktree, key-material | 3/1 | `identity/identity-soul` |  |  |
 | `agent-space.mjs` | 670 | soul | soul-runtime/hq | HQ | fs, worktree | 7/10 | - | C2 |  |
@@ -1159,7 +1159,7 @@ Columns: **Now** is the ADR-0645 module; **Target** is the destination; **Domain
 | `daemon-diagnostics.mjs` | 127 | host | daemon | HQ | - | 1/1 | - |  |  |
 | `daemon-launch.mjs` | 531 | soul | soul-runtime/hq | HQ | fs, worktree, comms | 9/2 | - |  | HQ launches members under their principals. |
 | `daemon-log.mjs` | 60 | shared | daemon/sdk | HQ + Soul | fs | 0/2 | - |  |  |
-| `daemon-mcp.mjs` | 881 | host | daemon | Soul | fs, worktree, comms | 10/1 | `agent-population` `comms-relay` `soul-threads` `soul-asides` `identity/identity-host` `reach-contract` |  | `reach-mcp` inside the Soul; asks HQ. |
+| `daemon-mcp.mjs` | 881 | host | identity | Soul | fs, worktree, comms | 10/1 | `agent-population` `comms-relay` `soul-threads` `soul-asides` `identity/identity-host` `reach-contract` |  | `reach-mcp` inside the Soul; asks HQ. |
 | `daemon-status.mjs` | 65 | comms | daemon | HQ | comms | 2/3 | `comms-client` |  |  |
 | `daemon-supervisor.mjs` | 874 | host | daemon | HQ | fs, exec, keyd, comms | 6/4 | - | C5 |  |
 | `delegation-grants.mjs` | 272 | host | identity | HQ | keyd | 3/1 | `agent-jobs` |  | Grant handles, caller-bound. |
@@ -1283,7 +1283,7 @@ Columns: **Now** is the ADR-0645 module; **Target** is the destination; **Domain
 | `skill-status.mjs` | 50 | soul | soul-runtime/core | HQ + Soul | - | 5/1 | - |  |  |
 | `skill-update-merge.mjs` | 44 | soul | soul-runtime/core | HQ + Soul | - | 0/1 | - |  |  |
 | `skill-workspace.mjs` | 416 | soul | soul-runtime/hq | HQ | fs, exec, worktree | 5/1 | - |  |  |
-| `skill.mjs` | 322 | cli | daemon | Soul | fs, exec | 2/0 | - |  |  |
+| `skill.mjs` | 322 | cli | identity | Soul | fs, exec | 2/0 | - |  |  |
 | `sop-policy.mjs` | 80 | org | daemon | HQ | - | 0/1 | - |  |  |
 | `sop.mjs` | 1522 | soul | daemon (org resolver) + soul-runtime/core (selection) | HQ | fs, exec, keyd | 10/6 | `agent-population` `identity/identity-soul` `owner-action` `acp-registry` `sandbox` | C3 | In cycle C3. |
 | `soul-app-declarations.mjs` | 45 | soul | soul-runtime/core | HQ + Soul | - | 2/1 | - | C1 |  |
