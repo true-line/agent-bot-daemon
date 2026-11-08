@@ -6,14 +6,13 @@ import { definePlugin, validateManifest, staticManifest, supportedHostApis, HOST
 import { compareVersions, satisfies, validRange } from '../sdk/semver.mjs';
 import { HQ_OPERATIONS, SAFE_MODE_OPERATIONS, ADMISSION_OPERATIONS } from '../sdk/operations.mjs';
 
-const base = { name: 'agent-bot-comms', version: '0.6.0', hostApi: 1, async init() {} };
+const base = { name: 'agent-comms', version: '0.6.0', hostApi: 1, async init() {} };
 const invalid = (m, pattern) => assert.throws(() => validateManifest(m), (e) => e.code === 'host.invalid_manifest' && pattern.test(e.message));
 
 test('the plan §4.1 example manifest is valid', () => {
   const p = definePlugin({
     ...base,
-    requires: { 'agent-bot-identity': '^1.0.0' },
-    optional: { 'agent-bot-soul-runtime': '>=0.1.0 <1' },
+    optional: { 'agent-bot-souls': '>=0.1.0 <1' },
     services: ['config', 'store', 'log', 'receipts', 'identityService', 'credentials', 'launch', 'events', 'approvals', 'budgets'],
     identityServiceRoutes: ['/api/daemon/notices*'],
   });

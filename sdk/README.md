@@ -11,10 +11,9 @@ later.
 import { definePlugin } from '@agent-bot/sdk';
 
 export default definePlugin({
-  name: 'agent-bot-comms',
+  name: 'agent-comms',
   version: '0.6.0',
   hostApi: 1,
-  requires: { 'agent-bot-identity': '^1.0.0' },
   services: ['store', 'log'],
   async init(ctx) {
     ctx.hq.register({ op: 'tasks.list', auth: 'owner', handler: async () => ctx.services.store.tx((tx) => tx.list('tasks')) });
@@ -40,13 +39,23 @@ assert.ok(r.ok, JSON.stringify(r.results.filter((x) => !x.ok)));
 | --- | --- | --- |
 | `plugin.mjs` | `definePlugin` and manifest validation. Unknown fields are refused. | §4.1 |
 | `operations.mjs` | The `hq/v1` operations, the auth class of each, and the safe-mode and admission sets. | §4.2, §7.3 |
-| `host.mjs` | `createHost`: resolve, identity-first bootstrap, init and start in dependency order, stop in reverse order under a deadline, registration, and `dispatch` with auth. | §4.2, §4.4 |
+| `host.mjs` | `createHost`: resolve, identity-first bootstrap in HQ core (device status from the signer; `status`, `device.status` and `device.enroll` answered by core), init and start in dependency order, stop in reverse order under a deadline, registration, and `dispatch` with auth. | §4.2, §4.4 |
 | `services.mjs` | The host services in memory: store, credentials, identityService, approvals, budgets, launch, events, receipts, log, config, clock, random and profile. | §4.3 |
 | `test-host.mjs` | `createTestHost`, which adds a fake identity service with Ed25519-signed canned responses, a fake signer, a deterministic clock and random, and fake member principals. | §4.6 |
 | `conformance.mjs` | `checkPlugin`, the plugin conformance suite. | §4.6 |
 | `semver.mjs` | Plugin versions and dependency ranges. | §4.5 |
 | `errors.mjs` | `HostError`, registry codes (wire) and `host.*` codes (in HQ only). | §4.7 |
 | `wire/` | RFC 8785 canonical JSON and digests, strict JSON parsing, a JSON Schema validator for the keywords the pinned schemas use (it refuses any other keyword), and N/N−1 version and capability negotiation. | §2.3, §4.5 |
+
+## Identity is HQ core
+
+Per [PDR-0027](https://github.com/true-line/agent-bot-platform/blob/main/docs/04-decisions/PDR-0027-hq-identity-authority-lives-in-agent-bot-daemon.md),
+enrollment, the identity-service link, the device key and signer, credential
+references, grants and approvals are built into HQ, not a plugin. The host
+reads device status from the signer before any plugin runs, and no plugin can
+register `status`, `device.status` or `device.enroll`. agent-bot-identity's
+plugin registers member surfaces only: `ctx.tools`, `ctx.commands` and
+`ctx.hooks`.
 
 ## Credential custody
 
@@ -75,6 +84,3 @@ policy. Both stay in agent-bot-machine's admin sandbox.
   fakes in later PRs.
 - **No binding-proof or presence codecs yet.** They wait for platform
   discussion #27 and the PDR-0023 records.
-- **Which plugin is the identity plugin is configurable**
-  (`identityPlugin`, default `agent-bot-identity`) while platform
-  discussion #27 decides where HQ-side identity authority lives.

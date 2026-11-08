@@ -97,14 +97,17 @@ export function fakeIdentityService({ routes = {}, link = 'ok', tokenTtlMs = 5 *
   return svc;
 }
 
-// A fake signer: device status for identity's read-only init probe, and
-// signatures over approval records. Real HQ uses the platform signer's
-// non-exportable device key; this only proves the record was not edited.
+// A fake signer: device status for HQ core's identity bootstrap, test
+// enrollment, and signatures over approval records. Real HQ uses the
+// platform signer's non-exportable device key; this only proves the record
+// was not edited.
 export function fakeSigner({ device = 'enrolled' } = {}) {
   if (!DEVICE_STATES.includes(device)) throw new TypeError(`device is one of ${DEVICE_STATES}`);
   const signer = {
     device,
     deviceStatus: () => signer.device,
+    // Test enrollment: a fresh device key, so a revoked record is never revived.
+    enroll: () => { signer.device = 'enrolled'; signer.generation = (signer.generation ?? 0) + 1; return { keyGeneration: signer.generation }; },
     sign: (bytes) => `fake-sig-v0:${createHash('sha256').update('fake-signer\0').update(bytes).digest('hex')}`,
     verify: (bytes, sig) => sig === signer.sign(bytes),
   };

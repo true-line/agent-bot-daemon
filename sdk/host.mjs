@@ -2,6 +2,11 @@
 // init and start in dependency order, stop in reverse under a deadline,
 // registration, and hq/v1 dispatch with auth.
 //
+// Identity is HQ core, not a plugin (PDR-0027): the host reads device status
+// from the signer itself and answers status, device.status and device.enroll.
+// No plugin can register those operations, and agent-bot-identity's plugin
+// registers member surfaces (tools, commands, hooks) like any other.
+//
 // This is the seam the platform registers to agent-bot-daemon as
 // `hq-plugin-contract`. The test host runs it on in-memory services; the
 // real HQ (§9 PR 12) runs the same host on its store, control socket and
@@ -16,7 +21,8 @@ import { parseStrict } from './wire/strict-json.mjs';
 
 const KIND = /^[a-z][a-z0-9_.-]{0,63}$/;
 const ADAPTER_CLASSES = ['inference', 'service'];
-const CORE_OPERATIONS = { status: 'hq' }; // operations HQ core answers itself
+// Operations HQ core answers itself; a plugin registering one is refused.
+const CORE_OPERATIONS = Object.freeze({ status: 'hq', 'device.status': 'hq', 'device.enroll': 'hq' });
 
 function withTimeout(promise, ms, what) {
   let timer;
@@ -30,7 +36,6 @@ const describe = (e) => (e instanceof HostError ? `${e.code}: ${e.message}` : e?
 
 export function createHost({
   plugins = [],
-  identityPlugin = 'agent-bot-identity',
   hostApi = HOST_API,
   initTimeoutMs = 10_000,
   stopDeadlineMs = 5_000,
@@ -44,7 +49,7 @@ export function createHost({
     byName.set(p.name, p);
   }
 
-  const registries = { hq: new Map(), kinds: new Map(), adapters: new Map(), tools: new Map(), commands: new Map(), probes: new Map() };
+  const registries = { hq: new Map(), kinds: new Map(), adapters: new Map(), tools: new Map(), commands: new Map(), hooks: new Map(), probes: new Map() };
   const states = new Map();      // name → { state, reason }
   const provided = new Map();    // name → provides object
   const contexts = new Map();
@@ -108,9 +113,7 @@ export function createHost({
       const s = states.get(n);
       if (s.state === 'degraded') { setState(n, 'resolved'); degrade(n, s.reason); }
     }
-    // Identity first, always (§4.4), then dependency order.
     order = [...sorted, ...cyclic];
-    if (order.includes(identityPlugin)) order = [identityPlugin, ...order.filter((n) => n !== identityPlugin)];
   }
 
   function register(registry, plugin, key, value, label) {
@@ -157,6 +160,13 @@ export function createHost({
       }),
       tools: Object.freeze({ register(tool = {}) { str(tool.name, 'tool name'); register(registries.tools, name, tool.name, { tool }, 'tool'); } }),
       commands: Object.freeze({ register(cmd = {}) { str(cmd.name, 'command name'); register(registries.commands, name, cmd.name, { cmd }, 'command'); } }),
+      hooks: Object.freeze({
+        register(hook = {}) {
+          str(hook.name, 'hook name');
+          fn(hook.handler, `${hook.name} handler`);
+          register(registries.hooks, name, hook.name, { hook }, 'hook');
+        },
+      }),
       readiness: Object.freeze({
         register(probe = {}) {
           str(probe.name, 'probe name');
@@ -165,8 +175,6 @@ export function createHost({
         },
       }),
     };
-    // Identity's init may ask the signer for device status: a read-only probe.
-    if (name === identityPlugin) ctx.signer = Object.freeze({ deviceStatus: () => core.signer.deviceStatus() });
     return Object.freeze(ctx);
   }
 
@@ -221,40 +229,29 @@ export function createHost({
     started = [];
     resolve();
 
-    // 2. identity init: device status from the signer.
+    // 1–2. HQ core identity: device status from the signer (PDR-0027).
     const enterSafe = (reason) => { mode = 'safe'; modeReason = reason; };
-    const id = byName.get(identityPlugin);
-    let idOut;
-    if (!id) enterSafe(`identity plugin ${identityPlugin} is not installed`);
-    else if (states.get(identityPlugin).state === 'degraded') enterSafe(`identity plugin degraded: ${states.get(identityPlugin).reason}`);
-    else {
-      idOut = await initPlugin(identityPlugin);
-      if (!idOut) enterSafe(`identity plugin degraded: ${states.get(identityPlugin).reason}`);
-      else if (!DEVICE_STATES.includes(idOut.device)) {
-        degrade(identityPlugin, `init returned no device status (one of ${DEVICE_STATES.join(', ')})`);
-        enterSafe(`identity plugin degraded: ${states.get(identityPlugin).reason}`);
-      } else {
-        device = core.deviceRevoked ? 'revoked' : idOut.device;
+    let reported;
+    try { reported = await core.signer.deviceStatus(); } catch (e) { enterSafe(`signer unavailable: ${describe(e)}`); }
+    if (mode !== 'safe') {
+      if (!DEVICE_STATES.includes(reported)) enterSafe(`signer reported no device status (one of ${DEVICE_STATES.join(', ')})`);
+      else {
+        device = core.deviceRevoked ? 'revoked' : reported;
         if (device === 'unenrolled') enterSafe('device not enrolled: run enroll');
-        if (device === 'revoked') revokeDevice(core, 'identity reported the device revoked at startup');
+        if (device === 'revoked') revokeDevice(core, 'the signer reported the device revoked at startup');
       }
     }
 
     if (mode === 'safe') {
-      // Only identity runs, so enrollment works; nothing else starts and no Soul is admitted.
-      if (idOut && states.get(identityPlugin).state === 'initialized') await startPlugin(identityPlugin);
-      for (const n of order) if (n !== identityPlugin && states.get(n).state !== 'degraded') setState(n, 'waiting', `safe mode: ${modeReason}`);
+      // Core answers status and enrollment; no plugin starts and no Soul is admitted.
+      for (const n of order) if (states.get(n).state !== 'degraded') setState(n, 'waiting', `safe mode: ${modeReason}`);
       return status();
     }
 
-    // Remaining inits, then starts, in order (identity is first in both).
-    for (const n of order) if (n !== identityPlugin && states.get(n).state === 'resolved') await initPlugin(n);
+    // 3–4. Plugins: init, then start, in dependency order.
+    for (const n of order) if (states.get(n).state === 'resolved') await initPlugin(n);
     for (const n of order) if (states.get(n).state === 'initialized') await startPlugin(n);
-    if (states.get(identityPlugin).state !== 'running') {
-      enterSafe(`identity plugin degraded: ${states.get(identityPlugin).reason}`);
-      return status();
-    }
-    // 6. hq/v1 admissions open.
+    // 5. hq/v1 admissions open.
     mode = device === 'revoked' ? 'device_revoked' : 'running';
     if (mode === 'device_revoked') modeReason = 'device revoked: re-enroll';
     admissions = true;
@@ -294,7 +291,7 @@ export function createHost({
       ...(modeReason ? { reason: modeReason } : {}),
       admissions,
       profile: core.profile,
-      identity: { plugin: identityPlugin, device: device ?? 'unknown', link: core.identity.link },
+      identity: { device: device ?? 'unknown', link: core.identity.link },
       plugins: order.map((name) => ({ name, version: byName.get(name).version, ...states.get(name) })),
     };
   }
@@ -306,10 +303,22 @@ export function createHost({
     if (mode === 'safe' && !SAFE_MODE_OPERATIONS.includes(op)) fail('host.safe_mode', `safe mode (${modeReason}): ${op} is unavailable`, { op });
     if (ADMISSION_OPERATIONS.includes(op) && !admissions) fail('host.admissions_closed', `${op}: admissions are not open`, { op });
     if (op === 'status') return status();
+    if (op === 'device.status') return { device: device ?? 'unknown', link: core.identity.link };
+    if (op === 'device.enroll') return enroll(payload);
     const reg = registries.hq.get(op);
     if (!reg) fail('host.unknown_operation', `no plugin implements ${op}`, { op });
     if (states.get(reg.plugin)?.state !== 'running') fail('host.plugin_degraded', `${reg.plugin} is ${states.get(reg.plugin)?.state}`, { plugin: reg.plugin, ...states.get(reg.plugin) });
     return reg.handler(structuredClone(payload), Object.freeze({ auth, session }));
+  }
+
+  // Enrollment is core (PDR-0027). The test signer enrolls in place; the
+  // real flow (identity-service device grant, §9 PR 15) replaces it. A
+  // revoked device record is never revived: re-enrollment means a new key.
+  async function enroll(payload) {
+    if (typeof core.signer.enroll !== 'function') fail('host.invalid_request', 'this signer cannot enroll');
+    const result = await core.signer.enroll(structuredClone(payload));
+    core.receipts.push({ seq: core.receipts.length + 1, at: core.clock.now(), plugin: 'hq', profile: core.profile, kind: 'device.enrolled' });
+    return { enrolled: true, restart: true, ...(result ?? {}) };
   }
 
   // Entry-point frames arrive as text: strict parsing first (duplicate keys
@@ -324,6 +333,7 @@ export function createHost({
       adapters: list(registries.adapters, (v) => ({ key: v.id, class: v.class, plugin: v.plugin })),
       tools: list(registries.tools, (v) => ({ key: v.tool.name, plugin: v.plugin })),
       commands: list(registries.commands, (v) => ({ key: v.cmd.name, plugin: v.plugin })),
+      hooks: list(registries.hooks, (v) => ({ key: v.hook.name, plugin: v.plugin })),
       probes: list(registries.probes, (v) => ({ key: v.probe.name, plugin: v.plugin })),
     };
   }

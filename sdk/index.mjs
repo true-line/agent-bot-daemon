@@ -6,7 +6,7 @@ export { HQ_OPERATIONS, AUTH_CLASSES, SAFE_MODE_OPERATIONS, ADMISSION_OPERATIONS
 export { parseVersion, isVersion, compareVersions, validRange, satisfies } from './semver.mjs';
 export { createHost } from './host.mjs';
 export { PROFILES, DEVICE_STATES, createCore, testClock, testRandom, fakeIdentityService, fakeSigner } from './services.mjs';
-export { createTestHost, fakeIdentityPlugin } from './test-host.mjs';
+export { createTestHost } from './test-host.mjs';
 export { checkPlugin } from './conformance.mjs';
 export { canonicalize, canonicalBytes, canonicalDigest } from './wire/canonical-json.mjs';
 export { parseStrict } from './wire/strict-json.mjs';

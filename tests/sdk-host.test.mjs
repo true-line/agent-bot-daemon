@@ -1,16 +1,18 @@
 // The plugin host on the test host (plan §4.2–§4.4, §4.6, §4.7): resolve,
-// identity-first bootstrap and its three identity outcomes, degraded
+// identity-first bootstrap in HQ core (PDR-0027) and its three identity
+// outcomes, degraded
 // fan-out, registration rules, dispatch and auth, and the host services.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { createHost } from '../sdk/host.mjs';
 import { definePlugin } from '../sdk/plugin.mjs';
-import { createTestHost, fakeIdentityPlugin } from '../sdk/test-host.mjs';
+import { createTestHost } from '../sdk/test-host.mjs';
+import { fakeSigner } from '../sdk/services.mjs';
 import { canonicalDigest } from '../sdk/wire/canonical-json.mjs';
 
 const code = (c) => (e) => e.code === c;
-const plugin = (name, extra = {}) => definePlugin({ version: '1.0.0', hostApi: 1, requires: { 'agent-bot-identity': '^1.0.0' }, async init() {}, ...extra, name });
+const plugin = (name, extra = {}) => definePlugin({ version: '1.0.0', hostApi: 1, async init() {}, ...extra, name });
 const stateOf = (host, name) => host.status().plugins.find((p) => p.name === name);
 
 // A plugin that hands its ctx to the test, for exercising services directly.
@@ -25,7 +27,7 @@ function probe(name, services, { routes, onInit, onStart } = {}) {
   return box;
 }
 
-test('init and start run in dependency order with identity first; stop runs in reverse', async () => {
+test('init and start run in dependency order; stop runs in reverse', async () => {
   const log = [];
   const mk = (name, requires = {}) => definePlugin({
     name, version: '1.0.0', hostApi: 1, requires,
@@ -33,58 +35,84 @@ test('init and start run in dependency order with identity first; stop runs in r
     async start() { log.push(`start ${name}`); },
     async stop() { log.push(`stop ${name}`); },
   });
-  const runtime = mk('agent-bot-soul-runtime', { 'agent-bot-comms': '^1.0.0' });
-  const comms = mk('agent-bot-comms', { 'agent-bot-identity': '^1.0.0' });
-  const loner = mk('aaa-first-alphabetically');
+  const souls = mk('agent-bot-souls', { 'agent-comms': '^1.0.0' });
+  const comms = mk('agent-comms');
   const identity = mk('agent-bot-identity');
-  const identityWithDevice = definePlugin({ ...identity, async init(ctx) { await identity.init(ctx); return { device: 'enrolled' }; } });
-  const host = createTestHost({ plugins: [runtime, loner, comms, identityWithDevice] });
+  const host = createTestHost({ plugins: [souls, identity, comms] });
   const s = await host.start();
   assert.equal(s.mode, 'running');
   assert.equal(s.admissions, true);
-  assert.deepEqual(log.slice(0, 4), ['init agent-bot-identity', 'init aaa-first-alphabetically', 'init agent-bot-comms', 'init agent-bot-soul-runtime']);
-  assert.equal(log[4], 'start agent-bot-identity');
+  assert.deepEqual(s.identity, { device: 'enrolled', link: 'ok' });
+  assert.deepEqual(log, ['init agent-bot-identity', 'init agent-comms', 'init agent-bot-souls', 'start agent-bot-identity', 'start agent-comms', 'start agent-bot-souls']);
   log.length = 0;
   await host.stop();
-  assert.deepEqual(log, ['stop agent-bot-soul-runtime', 'stop agent-bot-comms', 'stop aaa-first-alphabetically', 'stop agent-bot-identity']);
+  assert.deepEqual(log, ['stop agent-bot-souls', 'stop agent-comms', 'stop agent-bot-identity']);
   assert.equal(host.status().mode, 'stopped');
 });
 
-test('unenrolled device: safe mode; only identity runs; status and enrollment work; no Soul is admitted', async () => {
-  const other = plugin('agent-bot-comms', { async init(ctx) { ctx.hq.register({ op: 'tasks.list', auth: 'owner', handler: async () => [] }); } });
+test('identity is HQ core: device status and enrollment are core operations no plugin can take (PDR-0027)', async () => {
+  const tried = {};
+  const p = plugin('agent-bot-identity', {
+    async init(ctx) {
+      for (const op of ['status', 'device.status', 'device.enroll']) {
+        try { ctx.hq.register({ op, auth: 'owner', handler() {} }); tried[op] = 'ok'; } catch (e) { tried[op] = e.code; }
+      }
+      ctx.tools.register({ name: 'gh' });
+      ctx.commands.register({ name: 'whoami' });
+      ctx.hooks.register({ name: 'pre-commit', handler() {} });
+    },
+  });
+  const host = createTestHost({ plugins: [p] });
+  await host.start();
+  assert.deepEqual(tried, { status: 'host.duplicate_registration', 'device.status': 'host.duplicate_registration', 'device.enroll': 'host.duplicate_registration' });
+  assert.deepEqual(await host.dispatch('device.status', { auth: 'owner' }), { device: 'enrolled', link: 'ok' });
+  const regs = host.registrations();
+  assert.deepEqual([regs.tools, regs.commands, regs.hooks].map((l) => l.map((r) => r.key)), [['gh'], ['whoami'], ['pre-commit']]);
+  assert.deepEqual(regs.hq, []);
+});
+
+test('unenrolled device: safe mode; no plugin starts; status and enrollment work; no Soul is admitted', async () => {
+  const other = plugin('agent-comms', { async init(ctx) { ctx.hq.register({ op: 'tasks.list', auth: 'owner', handler: async () => [] }); } });
   const host = createTestHost({ device: 'unenrolled', plugins: [other] });
   const s = await host.start();
   assert.equal(s.mode, 'safe');
   assert.equal(s.admissions, false);
   assert.match(s.reason, /not enrolled/);
-  assert.equal(stateOf(host, 'agent-bot-identity').state, 'running');
-  assert.equal(stateOf(host, 'agent-bot-comms').state, 'waiting');
-  assert.deepEqual(await host.dispatch('device.status', { auth: 'owner' }), { device: 'unenrolled' });
+  assert.equal(stateOf(host, 'agent-comms').state, 'waiting');
+  assert.deepEqual(await host.dispatch('device.status', { auth: 'owner' }), { device: 'unenrolled', link: 'ok' });
   assert.equal((await host.dispatch('status', { auth: 'owner' })).mode, 'safe');
   await assert.rejects(host.dispatch('Hello', { auth: 'entry-point', payload: {} }), code('host.safe_mode'));
   await assert.rejects(host.dispatch('tasks.list', { auth: 'owner' }), code('host.safe_mode'));
+  assert.deepEqual(await host.dispatch('device.enroll', { auth: 'owner' }), { enrolled: true, restart: true, keyGeneration: 1 });
+  assert.equal(host.receipts().at(-1).kind, 'device.enrolled');
   await host.stop();
+  const after = await host.start();
+  assert.equal(after.mode, 'running');
+  assert.equal(stateOf(host, 'agent-comms').state, 'running');
+  assert.deepEqual(await host.dispatch('tasks.list', { auth: 'owner' }), []);
 });
 
-test('identity missing, failing or silent about the device: safe mode', async () => {
-  const noIdentity = createHost({ plugins: [definePlugin({ name: 'agent-bot-comms', version: '1.0.0', hostApi: 1, async init() {} })] });
-  assert.match((await noIdentity.start()).reason, /not installed/);
+test('a missing, failing or silent signer: safe mode', async () => {
+  const noSigner = createHost({ plugins: [plugin('agent-comms')], core: undefined });
+  assert.equal((await noSigner.start()).mode, 'running', 'the default core carries a test signer');
 
-  const throws = definePlugin({ name: 'agent-bot-identity', version: '1.0.0', hostApi: 1, async init() { throw new Error('signer missing'); } });
-  const h1 = createTestHost({ plugins: [throws, plugin('agent-bot-comms')] });
-  const s1 = await h1.start();
+  const throwing = createTestHost({ plugins: [plugin('agent-comms')] });
+  throwing.signer.deviceStatus = () => { throw new Error('no Secure Enclave'); };
+  const s1 = await throwing.start();
   assert.equal(s1.mode, 'safe');
-  assert.match(s1.reason, /signer missing/);
-  assert.equal(stateOf(h1, 'agent-bot-comms').reason, 'dependency agent-bot-identity degraded');
+  assert.match(s1.reason, /signer unavailable: no Secure Enclave/);
+  assert.equal(stateOf(throwing, 'agent-comms').state, 'waiting');
 
-  const silent = definePlugin({ name: 'agent-bot-identity', version: '1.0.0', hostApi: 1, async init() { return {}; } });
-  const s2 = await createTestHost({ plugins: [silent] }).start();
+  const silent = createTestHost();
+  silent.signer.deviceStatus = () => undefined;
+  const s2 = await silent.start();
   assert.equal(s2.mode, 'safe');
   assert.match(s2.reason, /no device status/);
+  assert.equal(typeof fakeSigner().enroll, 'function');
 });
 
 test('revoked device: device_revoked state, not safe mode; credentials refused, local work continues', async () => {
-  const p = probe('agent-bot-comms', ['credentials', 'store'], {
+  const p = probe('agent-comms', ['credentials', 'store'], {
     onInit: (ctx) => ctx.hq.register({ op: 'tasks.list', auth: 'owner', handler: async () => ['local'] }),
   });
   const host = createTestHost({ device: 'revoked', plugins: [p.plugin] });
@@ -99,7 +127,7 @@ test('revoked device: device_revoked state, not safe mode; credentials refused, 
 });
 
 test('identity service unreachable: admissions proceed; credentials wait with credential_unavailable (retryable)', async () => {
-  const p = probe('agent-bot-comms', ['credentials']);
+  const p = probe('agent-comms', ['credentials']);
   const host = createTestHost({ link: 'unreachable', plugins: [p.plugin] });
   const s = await host.start();
   assert.equal(s.mode, 'running');
@@ -112,7 +140,7 @@ test('identity service unreachable: admissions proceed; credentials wait with cr
 });
 
 test('revocation at runtime drops every token immediately and refuses new resolutions', async () => {
-  const p = probe('agent-bot-comms', ['credentials']);
+  const p = probe('agent-comms', ['credentials']);
   const host = createTestHost({ plugins: [p.plugin] });
   await host.start();
   await p.ctx.services.credentials.resolve('gh:repo', { task: 't1', operation: 'op1' });
@@ -130,7 +158,8 @@ test('resolve: missing, mismatched, unsupported hostApi and cyclic plugins are d
   const host = createTestHost({
     plugins: [
       plugin('needs-ghost', { requires: { ghost: '^1.0.0' } }),
-      plugin('needs-new-identity', { requires: { 'agent-bot-identity': '^2.0.0' } }),
+      plugin('base'),
+      plugin('needs-new-base', { requires: { base: '^2.0.0' } }),
       plugin('future-api', { hostApi: 3 }),
       plugin('cycle-a', { requires: { 'cycle-b': '^1.0.0' } }),
       plugin('cycle-b', { requires: { 'cycle-a': '^1.0.0' } }),
@@ -143,7 +172,7 @@ test('resolve: missing, mismatched, unsupported hostApi and cyclic plugins are d
   assert.equal(s.mode, 'running');
   const reason = (n) => stateOf(host, n).reason;
   assert.equal(reason('needs-ghost'), 'requires ghost, which is not installed');
-  assert.equal(reason('needs-new-identity'), 'requires agent-bot-identity ^2.0.0, installed 1.0.0');
+  assert.equal(reason('needs-new-base'), 'requires base ^2.0.0, installed 1.0.0');
   assert.match(reason('future-api'), /hostApi 3 unsupported/);
   assert.equal(reason('cycle-a'), 'dependency cycle');
   assert.equal(reason('cycle-b'), 'dependency cycle');
@@ -155,14 +184,14 @@ test('resolve: missing, mismatched, unsupported hostApi and cyclic plugins are d
 test('a failing non-identity plugin is degraded, its dependents do not start, and status says why', async () => {
   const host = createTestHost({
     plugins: [
-      plugin('agent-bot-comms', { async start() { throw new Error('relay config invalid'); } }),
-      plugin('agent-bot-soul-runtime', { requires: { 'agent-bot-identity': '^1.0.0', 'agent-bot-comms': '^1.0.0' } }),
+      plugin('agent-comms', { async start() { throw new Error('relay config invalid'); } }),
+      plugin('agent-bot-souls', { requires: { 'agent-comms': '^1.0.0' } }),
       plugin('independent'),
     ],
   });
   await host.start();
-  assert.deepEqual(stateOf(host, 'agent-bot-comms'), { name: 'agent-bot-comms', version: '1.0.0', state: 'degraded', reason: 'start failed: relay config invalid' });
-  assert.equal(stateOf(host, 'agent-bot-soul-runtime').reason, 'dependency agent-bot-comms degraded');
+  assert.deepEqual(stateOf(host, 'agent-comms'), { name: 'agent-comms', version: '1.0.0', state: 'degraded', reason: 'start failed: relay config invalid' });
+  assert.equal(stateOf(host, 'agent-bot-souls').reason, 'dependency agent-comms degraded');
   assert.equal(stateOf(host, 'independent').state, 'running');
 });
 
@@ -170,12 +199,12 @@ test('provided services reach dependents as ctx.deps', async () => {
   let seen;
   const host = createTestHost({
     plugins: [
-      plugin('agent-bot-comms', { async init() { return { provides: { send: (m) => `sent ${m}` } }; } }),
-      plugin('agent-bot-soul-runtime', { requires: { 'agent-bot-identity': '^1.0.0', 'agent-bot-comms': '^1.0.0' }, async init(ctx) { seen = ctx.deps; } }),
+      plugin('agent-comms', { async init() { return { provides: { send: (m) => `sent ${m}` } }; } }),
+      plugin('agent-bot-souls', { requires: { 'agent-comms': '^1.0.0' }, async init(ctx) { seen = ctx.deps; } }),
     ],
   });
   await host.start();
-  assert.equal(seen['agent-bot-comms'].send('x'), 'sent x');
+  assert.equal(seen['agent-comms'].send('x'), 'sent x');
   assert.equal(Object.isFrozen(seen), true);
 });
 
@@ -233,7 +262,7 @@ test('init may not write authority state, call the identity service, or overrun 
   assert.match(stateOf(host, 'calls-out').reason, /host.init_network_forbidden/);
   assert.match(stateOf(host, 'slow').reason, /host.timeout: slow init exceeded 50 ms/);
   assert.equal(stateOf(host, 'reads').state, 'running', 'read-only probes are allowed');
-  assert.deepEqual(host.registrations().hq, [{ key: 'device.enroll', auth: 'owner', plugin: 'agent-bot-identity' }, { key: 'device.status', auth: 'owner', plugin: 'agent-bot-identity' }]);
+  assert.deepEqual(host.registrations().hq, []);
 });
 
 test('stop runs under a deadline; an overrun is reported and the rest still stop', async () => {
@@ -241,7 +270,7 @@ test('stop runs under a deadline; an overrun is reported and the rest still stop
   const host = createTestHost({
     plugins: [
       plugin('hangs', { async stop() { await new Promise(() => {}); } }),
-      plugin('polite', { requires: { 'agent-bot-identity': '^1.0.0', hangs: '^1.0.0' }, async stop(_ctx, { reason, deadlineMs }) { stopped.push([reason, deadlineMs]); } }),
+      plugin('polite', { requires: { hangs: '^1.0.0' }, async stop(_ctx, { reason, deadlineMs }) { stopped.push([reason, deadlineMs]); } }),
     ],
   });
   await host.start();
@@ -252,14 +281,14 @@ test('stop runs under a deadline; an overrun is reported and the rest still stop
   const hangs = report.find((r) => r.name === 'hangs');
   assert.equal(hangs.ok, false);
   assert.equal(hangs.code, 'host.timeout');
-  assert.equal(report.find((r) => r.name === 'agent-bot-identity').ok, true);
+  assert.deepEqual(report.map((r) => r.name), ['polite', 'hangs'], 'reverse order, and the overrun does not stop the rest');
 });
 
 test('dispatch: unknown operations, not running, auth class, strict JSON, degraded owner, payload isolation', async () => {
   let got;
   const host = createTestHost({
     plugins: [
-      plugin('agent-bot-soul-runtime', {
+      plugin('agent-bot-souls', {
         async init(ctx) {
           ctx.hq.register({ op: 'Hello', auth: 'entry-point', handler: async (payload, meta) => { got = { payload, meta }; payload.mutated = true; return { ok: true }; } });
         },
@@ -283,7 +312,7 @@ test('dispatch: unknown operations, not running, auth class, strict JSON, degrad
 });
 
 test('services: only declared ones are reachable', async () => {
-  const p = probe('agent-bot-comms', ['log']);
+  const p = probe('agent-comms', ['log']);
   await createTestHost({ plugins: [p.plugin] }).start();
   p.ctx.services.log.info('hello');
   assert.throws(() => p.ctx.services.credentials, code('host.undeclared_service'));
@@ -319,7 +348,7 @@ test('store: plugin-scoped tables, rollback on throw, serial transactions, blobs
 });
 
 test('credentials: one token per task and operation, in memory only, never in receipts or logs, gone at stop', async () => {
-  const p = probe('agent-bot-comms', ['credentials', 'receipts', 'log']);
+  const p = probe('agent-comms', ['credentials', 'receipts', 'log']);
   const host = createTestHost({ plugins: [p.plugin], tokenTtlMs: 60_000 });
   await host.start();
   const { credentials, receipts, log } = p.ctx.services;
@@ -348,7 +377,7 @@ test('credentials: one token per task and operation, in memory only, never in re
 });
 
 test('identityService: allowlisted routes only, through the fake service', async () => {
-  const p = probe('agent-bot-comms', ['identityService'], { routes: ['/api/daemon/notices*'] });
+  const p = probe('agent-comms', ['identityService'], { routes: ['/api/daemon/notices*'] });
   const host = createTestHost({ plugins: [p.plugin], identityRoutes: { 'POST /api/daemon/notices/take': (body) => ({ body: { notices: [], echo: body } }) } });
   await host.start();
   const r = await p.ctx.services.identityService.call('post', '/api/daemon/notices/take', { max: 5 });
@@ -370,7 +399,7 @@ test('identityService: allowlisted routes only, through the fake service', async
 });
 
 test('approvals are bound to the canonical digest of the exact action (T24)', async () => {
-  const p = probe('agent-bot-comms', ['approvals']);
+  const p = probe('agent-comms', ['approvals']);
   const host = createTestHost({ plugins: [p.plugin] });
   await host.start();
   const { approvals } = p.ctx.services;
@@ -391,7 +420,7 @@ test('approvals are bound to the canonical digest of the exact action (T24)', as
 });
 
 test('budgets: reserve within the ceiling, refuse beyond it, release frees', async () => {
-  const p = probe('agent-bot-comms', ['budgets']);
+  const p = probe('agent-comms', ['budgets']);
   const host = createTestHost({ plugins: [p.plugin], budgets: { soul_1: { working: 10, maintenance: 2 } } });
   await host.start();
   const { budgets } = p.ctx.services;
@@ -408,7 +437,7 @@ test('budgets: reserve within the ceiling, refuse beyond it, release frees', asy
 });
 
 test('launch: members get references, never secrets', async () => {
-  const p = probe('agent-bot-soul-runtime', ['launch']);
+  const p = probe('agent-bot-souls', ['launch']);
   const host = createTestHost({ plugins: [p.plugin] });
   await host.start();
   const { launch } = p.ctx.services;
@@ -443,8 +472,8 @@ test('events: in process, at most once; start-phase subscriptions end at stop; i
 });
 
 test('receipts, config, clock, random and profile', async () => {
-  const p = probe('agent-bot-comms', ['receipts', 'config', 'clock', 'random', 'profile']);
-  const host = createTestHost({ plugins: [p.plugin], profile: 'managed-protected', config: { 'agent-bot-comms': { relays: ['site'] }, other: { secret: 'no' } } });
+  const p = probe('agent-comms', ['receipts', 'config', 'clock', 'random', 'profile']);
+  const host = createTestHost({ plugins: [p.plugin], profile: 'managed-protected', config: { 'agent-comms': { relays: ['site'] }, other: { secret: 'no' } } });
   await host.start();
   const { receipts, config, clock, random, profile } = p.ctx.services;
   assert.equal(profile.current(), 'managed-protected');
@@ -454,12 +483,5 @@ test('receipts, config, clock, random and profile', async () => {
   const r = random.hex(8);
   assert.equal(r, createTestHost({ seed: 'agent-bot-sdk-test' }).core.random.hex(8), 'deterministic');
   await receipts.append({ kind: 'relay.connected' });
-  assert.deepEqual(host.receipts().at(-1), { kind: 'relay.connected', seq: 1, at: Date.UTC(2026, 0, 1), plugin: 'agent-bot-comms', profile: 'managed-protected' });
-});
-
-test('the fake identity plugin is only added when the test brings none', () => {
-  const own = fakeIdentityPlugin({ version: '1.2.3' });
-  const host = createTestHost({ plugins: [own] });
-  assert.deepEqual(host.status().plugins.map((p) => p.name), []);
-  return host.start().then((s) => assert.deepEqual(s.plugins.map((p) => [p.name, p.version]), [['agent-bot-identity', '1.2.3']]));
+  assert.deepEqual(host.receipts().at(-1), { kind: 'relay.connected', seq: 1, at: Date.UTC(2026, 0, 1), plugin: 'agent-comms', profile: 'managed-protected' });
 });

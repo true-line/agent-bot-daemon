@@ -2,33 +2,14 @@
 // fake identity service (canned responses), a deterministic clock and
 // random, a fake signer and fake member principals. Plugin repositories run
 // their own tests on it, plus the conformance suite (conformance.mjs).
+// Identity is HQ core (PDR-0027), so the fake signer and fake identity
+// service stand in for it; no identity plugin is needed.
 import { createHost } from './host.mjs';
-import { definePlugin } from './plugin.mjs';
 import { createCore, decideApproval, fakeIdentityService, fakeSigner, testClock, testRandom } from './services.mjs';
-
-// Stands in for the identity plugin when a test doesn't bring one. Its init
-// reads device status from the signer (the read-only probe §4.4 allows) and
-// it answers device.status and device.enroll.
-export function fakeIdentityPlugin({ name = 'agent-bot-identity', version = '1.0.0' } = {}) {
-  let signer;
-  return definePlugin({
-    name,
-    version,
-    hostApi: 1,
-    services: [],
-    async init(ctx) {
-      signer = ctx.signer;
-      ctx.hq.register({ op: 'device.status', auth: 'owner', handler: async () => ({ device: signer.deviceStatus() }) });
-      ctx.hq.register({ op: 'device.enroll', auth: 'owner', handler: async () => ({ enrolled: true, restart: true }) });
-      return { device: signer.deviceStatus() };
-    },
-  });
-}
 
 export function createTestHost({
   plugins = [],
   services = {},
-  identityPlugin = 'agent-bot-identity',
   device = 'enrolled',
   link = 'ok',
   identityRoutes = {},
@@ -45,8 +26,7 @@ export function createTestHost({
   const identity = fakeIdentityService({ routes: identityRoutes, link, seed: `${seed}/identity`, ...(tokenTtlMs ? { tokenTtlMs } : {}) });
   const signer = fakeSigner({ device });
   const core = createCore({ clock, random: testRandom(seed), profile, config, identity, signer, budgets });
-  const all = plugins.some((p) => p.name === identityPlugin) ? plugins : [fakeIdentityPlugin({ name: identityPlugin }), ...plugins];
-  const host = createHost({ plugins: all, identityPlugin, core, services, initTimeoutMs, stopDeadlineMs });
+  const host = createHost({ plugins, core, services, initTimeoutMs, stopDeadlineMs });
   return Object.freeze({
     ...host,
     get mode() { return host.mode; },

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { checkPlugin } from '../sdk/conformance.mjs';
 import { definePlugin } from '../sdk/plugin.mjs';
 
-const plugin = (extra) => definePlugin({ name: 'subject', version: '1.0.0', hostApi: 1, requires: { 'agent-bot-identity': '^1.0.0' }, async init() {}, ...extra });
+const plugin = (extra) => definePlugin({ name: 'subject', version: '1.0.0', hostApi: 1, async init() {}, ...extra });
 const failed = (r) => r.results.filter((x) => !x.ok).map((x) => x.check);
 
 test('a well-behaved plugin passes every check', async () => {
