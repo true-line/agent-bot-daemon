@@ -88,8 +88,8 @@ and an accepted platform decision differ, the decision wins.
   at best the **managed cooperative** profile, because HQ-like functions
   share a trust domain with the members. Where App keys sit in readable
   files it is closer to **standalone unenforced**. It already composes modules through injected
-  ports (`createIdentityRoutes`, `createSoulRoutes` in `agent-daemon.mjs`
-  around L575–589), which is the seed of the plugin contract.
+  ports (`createIdentityRoutes`, `createSoulRoutes` in `agent-daemon.mjs`),
+  which is the seed of the plugin contract.
 - **An extraction is already approved.** `docs/identity-extraction-plan.md`
   extracts identity to `qwts/agent-identity`, and the owner answered its
   questions on 2026-10-11. This plan replaces that end state (D1).
@@ -774,6 +774,8 @@ The following keep their names, arguments, exit codes and `--json` shapes,
 pinned by golden tests (PR 2):
 
 - the `agent-bot` command and its subcommands;
+- the MCP tools of `agent-bot mcp` and `reach-mcp`: their names,
+  descriptions and input schemas;
 - the `agent-comms` command;
 - the hook path `agent-bot hook <name>`;
 - bindings and Agent ID records;
