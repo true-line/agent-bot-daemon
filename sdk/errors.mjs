@@ -37,6 +37,8 @@ export const REGISTRY_CODES = Object.freeze({
   credential_unavailable: true,
   device_revoked: false,
   profile_insufficient: false,
+  revision_conflict: true,
+  write_scope_conflict: false,
 });
 
 const RETRYABLE = new Set(Object.entries(REGISTRY_CODES).filter(([, r]) => r).map(([c]) => c));

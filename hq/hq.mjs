@@ -29,6 +29,7 @@ import { createHost } from '../sdk/host.mjs';
 import { fail } from '../sdk/errors.mjs';
 import { createCore, pushReceipt, revokeDevice } from '../sdk/services.mjs';
 import { admissionPlugin } from './admission.mjs';
+import { tasksPlugin } from './tasks.mjs';
 import { legacyDaemon, legacySigner } from './legacy.mjs';
 import { detectProfile } from './profile.mjs';
 import { loadPlugins } from './plugins.mjs';
@@ -36,7 +37,7 @@ import { checkSocketPath, listenSocket } from './socket.mjs';
 import { coreTable, CORE_PLUGIN, ensurePrivateDir, openStore } from './store.mjs';
 
 export const HQ_VERSION = '0.1.0';
-const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'legacy']);
+const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'concurrentWriters', 'legacy']);
 const LEGACY_KEYS = new Set(['supervise', 'probeIntervalMs']);
 const DEFAULT_PROBE_MS = 30_000;
 
@@ -72,6 +73,10 @@ export function validateConfig(c) {
       if (!Array.isArray(list) || list.some((d) => typeof d !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(d))) throw new Error(`HQ config: ${soul} needs a list of sha256: digests`);
     }
   }
+  if (c.concurrentWriters !== undefined && (!Array.isArray(c.concurrentWriters)
+    || !c.concurrentWriters.every((w) => typeof w === 'string' && w.length > 0 && w.length <= 256))) {
+    throw new Error('HQ config: concurrentWriters is a list of workspaces');
+  }
   if (c.legacy !== undefined) {
     if (!c.legacy || typeof c.legacy !== 'object' || Array.isArray(c.legacy)) throw new Error('HQ config: legacy is an object');
     for (const k of Object.keys(c.legacy)) if (!LEGACY_KEYS.has(k)) throw new Error(`HQ config: unknown key legacy.${k}`);
@@ -83,7 +88,7 @@ export function validateConfig(c) {
 
 export function createHQ({
   home,
-  schemas,                       // pinned hq/v1 schemas by name (admission.mjs SCHEMA_NAMES)
+  schemas,                       // pinned schemas by name: hq/v1 (admission.mjs SCHEMA_NAMES) and task/v1 (tasks.mjs TASK_SCHEMA_NAMES)
   config,                        // defaults to <home>/config.json
   signer = legacySigner(),
   legacy,                        // defaults to legacyDaemon with the config's supervise flag
@@ -141,6 +146,17 @@ export function createHQ({
     }
   }
 
+  // The task deadline sweep (hq/tasks.mjs), on the same interval as the
+  // legacy probe. A failed sweep is logged and retried on the next pass.
+  async function sweepTasks() {
+    const tasks = host.mode === 'running' ? host.provided('hq-tasks') : undefined;
+    if (!tasks) return [];
+    try { return await tasks.expire(); } catch (e) {
+      core.logs.push({ level: 'warn', plugin: 'hq', at: clock.now(), message: `task sweep failed: ${e.message}` });
+      return [];
+    }
+  }
+
   async function start() {
     if (running) throw new Error('HQ is already running');
     ensurePrivateDir(home, { uid });
@@ -155,7 +171,10 @@ export function createHQ({
       profile: profileInfo.profile,
       identity: unlinkedIdentity(),
       persist: () => store.persist(),
-      config: { 'hq-admission': { acceptedDefinitions: cfg.acceptedDefinitions ?? {}, ...(cfg.leaseTtlMs ? { leaseTtlMs: cfg.leaseTtlMs } : {}) } },
+      config: {
+        'hq-admission': { acceptedDefinitions: cfg.acceptedDefinitions ?? {}, ...(cfg.leaseTtlMs ? { leaseTtlMs: cfg.leaseTtlMs } : {}) },
+        'hq-tasks': { concurrentWriters: cfg.concurrentWriters ?? [] },
+      },
     });
     store.load(core);
     // Sessions left open by a crash are closed now; they cannot be live.
@@ -165,7 +184,7 @@ export function createHQ({
     // code runs. A refused plugin never reaches the host; status and a
     // receipt say why.
     const admission = admissionPlugin({ schemas, profileReasons: () => profileInfo.reasons });
-    const builtIn = [admission, ...plugins];
+    const builtIn = [admission, tasksPlugin({ schemas }), ...plugins];
     pluginLoad = [];
     const accepted = [];
     const taken = new Set([CORE_PLUGIN, ...builtIn.map((p) => p.name)]);
@@ -220,7 +239,7 @@ export function createHQ({
     // slow, and HQ answers status before it finishes (legacy state "unknown").
     firstTick = legacyTick();
     const every = cfg.legacy?.probeIntervalMs ?? DEFAULT_PROBE_MS;
-    timer = setInterval(() => { legacyTick(); }, every);
+    timer = setInterval(() => { legacyTick(); sweepTasks(); }, every);
     timer.unref?.();
     return host.status();
   }
@@ -244,6 +263,7 @@ export function createHQ({
     paths,
     status: () => host.status(),
     legacyTick,
+    sweepTasks,
     // Resolves when the first legacy pass after start has finished.
     settled: () => firstTick,
     get host() { return host; },

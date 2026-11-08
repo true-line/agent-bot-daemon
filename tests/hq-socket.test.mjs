@@ -27,7 +27,7 @@ test('status over the control socket reports managed-cooperative honestly, with 
     assert.equal(s.legacy.state, 'running');
     assert.equal(s.hq.ownerSessions, 1);
     assert.match(s.hq.sockets.access, /no peer-credential check/);
-    assert.deepEqual(s.plugins.map((p) => [p.name, p.state]), [['hq-admission', 'running']]);
+    assert.deepEqual(s.plugins.map((p) => [p.name, p.state]), [['hq-admission', 'running'], ['hq-tasks', 'running']]);
   } finally { await t.done(); }
 });
 
