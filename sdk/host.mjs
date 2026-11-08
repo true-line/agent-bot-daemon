@@ -16,7 +16,7 @@ import { fail, HostError } from './errors.mjs';
 import { HQ_OPERATIONS, SAFE_MODE_OPERATIONS, ADMISSION_OPERATIONS } from './operations.mjs';
 import { HOST_API, supportedHostApis, validateManifest } from './plugin.mjs';
 import { satisfies } from './semver.mjs';
-import { bindServices, createCore, dropSubscriptions, dropTokens, DEVICE_STATES, revokeDevice } from './services.mjs';
+import { bindServices, createCore, dropSubscriptions, dropTokens, DEVICE_STATES, pushReceipt, revokeDevice } from './services.mjs';
 import { parseStrict } from './wire/strict-json.mjs';
 
 const KIND = /^[a-z][a-z0-9_.-]{0,63}$/;
@@ -41,6 +41,9 @@ export function createHost({
   stopDeadlineMs = 5_000,
   core = createCore(),
   services = {},
+  // HQ adds its own status fields (profile reasons, sockets, the legacy
+  // daemon); they are merged into every status answer.
+  extraStatus,
 } = {}) {
   const byName = new Map();
   for (const p of plugins) {
@@ -308,6 +311,7 @@ export function createHost({
       profile: core.profile,
       identity: { device: device ?? 'unknown', link: core.identity.link },
       plugins: order.map((name) => ({ name, version: byName.get(name).version, ...states.get(name) })),
+      ...(extraStatus ? extraStatus() : {}),
     };
   }
 
@@ -336,7 +340,7 @@ export function createHost({
     // service, but this host is enrolled again from its next start.
     core.deviceRevoked = false;
     dropTokens(core);
-    core.receipts.push({ seq: core.receipts.length + 1, at: core.clock.now(), plugin: 'hq', profile: core.profile, kind: 'device.enrolled' });
+    await pushReceipt(core, { plugin: 'hq', kind: 'device.enrolled' });
     return { enrolled: true, restart: true, ...(result ?? {}) };
   }
 

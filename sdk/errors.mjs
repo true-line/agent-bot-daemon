@@ -5,8 +5,11 @@
 //   pinned soul-contracts errors/registry.json and may cross the wire. A test
 //   checks every one used here exists in the pinned registry.
 // - Host codes (`host.<name>`) are refusals inside HQ that have no registry
-//   code. They never go on the wire; a contract that needs one adds a registry
-//   code in soul-contracts first.
+//   code. They never appear in a contract record or a common/v1 error
+//   response; a contract that needs one adds a registry code in
+//   soul-contracts first. HQ's local sockets carry them in a separate
+//   `host_refusal` field (hq/socket.mjs) until soul-contracts specifies the
+//   hq/v1 request envelope.
 
 export class HostError extends Error {
   constructor(code, message, details = undefined) {
@@ -21,10 +24,14 @@ export class HostError extends Error {
   }
 }
 
-// Registry codes the SDK raises, with the registry's `retryable` flag.
+// Registry codes the SDK and HQ raise, with the registry's `retryable` flag.
 export const REGISTRY_CODES = Object.freeze({
   unsupported_version: false,
   required_capability_missing: false,
+  caller_mismatch: false,
+  stale_epoch: false,
+  lease_expired: true,
+  definition_not_accepted: false,
   approval_mismatch: false,
   budget_exhausted: false,
   credential_unavailable: true,
@@ -55,6 +62,7 @@ export const HOST_CODES = Object.freeze([
   'host.invalid_request',
   'host.secret_in_env',
   'host.context_revoked',
+  'host.internal',
 ]);
 
 export const fail = (code, message, details) => {

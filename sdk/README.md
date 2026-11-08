@@ -82,5 +82,5 @@ policy. Both stay in agent-bot-machine's admin sandbox.
   The §4.7 link hardening (DPoP, response-signature checks, pinned keys)
   and the `daemon-machine-channel` seam to agent-bot-machine replace the
   fakes in later PRs.
-- **No binding-proof or presence codecs yet.** They wait for platform
-  discussion #27 and the PDR-0023 records.
+- **No binding-proof or presence codecs yet.** They wait for the
+  `observation-v1` contract that PDR-0023 assigns to soul-contracts.
