@@ -14,8 +14,17 @@ export function canonicalize(value) {
   return serialize(value, new Set());
 }
 
+// JCS is defined over I-JSON (RFC 7493): a lone UTF-16 surrogate has no
+// encoding, so it is refused here exactly as the strict parser refuses it.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+function string(s) {
+  if (LONE_SURROGATE.test(s)) throw new TypeError('JCS has no encoding for a lone surrogate');
+  return JSON.stringify(s);
+}
+
 function serialize(value, seen) {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
+  if (value === null || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'string') return string(value);
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new TypeError(`JCS has no encoding for ${value}`);
     return JSON.stringify(value);
@@ -25,11 +34,17 @@ function serialize(value, seen) {
   seen.add(value);
   let out;
   if (Array.isArray(value)) {
-    out = `[${value.map((v) => serialize(v, seen)).join(',')}]`;
+    // Every index, holes included: map() skips holes, so [ , ] and [] would collide.
+    const items = [];
+    for (let i = 0; i < value.length; i++) {
+      if (!Object.prototype.hasOwnProperty.call(value, i)) throw new TypeError(`JCS has no encoding for a sparse array (hole at ${i})`);
+      items.push(serialize(value[i], seen));
+    }
+    out = `[${items.join(',')}]`;
   } else {
     const proto = Object.getPrototypeOf(value);
     if (proto !== Object.prototype && proto !== null) throw new TypeError('JCS encodes plain objects only');
-    out = `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${serialize(value[k], seen)}`).join(',')}}`;
+    out = `{${Object.keys(value).sort().map((k) => `${string(k)}:${serialize(value[k], seen)}`).join(',')}}`;
   }
   seen.delete(value);
   return out;

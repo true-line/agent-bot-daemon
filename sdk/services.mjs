@@ -68,6 +68,7 @@ export function fakeIdentityService({ routes = {}, link = 'ok', tokenTtlMs = 5 *
     const signature = edSign(null, Buffer.from(`agent-bot-sig-v1\n${status}\n${digest}\n${jti}`), privateKey).toString('base64url');
     return { status, headers: { 'Agent-Bot-Signature': signature, 'Agent-Bot-Request-Jti': jti, 'Agent-Bot-Key-Id': kid }, body: clone(body ?? null), text };
   };
+  const revokeListeners = [];
   const svc = {
     link,
     revoked: false,
@@ -75,7 +76,10 @@ export function fakeIdentityService({ routes = {}, link = 'ok', tokenTtlMs = 5 *
     tokenTtlMs,
     keySet: Object.freeze([Object.freeze({ kid, x, notBefore: '2026-01-01T00:00:00Z', notAfter: '2027-01-01T00:00:00Z', status: 'active' })]),
     setLink(state) { if (!IDENTITY_LINK_STATES.includes(state)) throw new TypeError(`link is one of ${IDENTITY_LINK_STATES}`); svc.link = state; },
-    revoke() { svc.revoked = true; },
+    // Revocation reaches HQ at once, as the real service's push does: every
+    // cached token is dropped, not only on the next identity call.
+    revoke() { svc.revoked = true; for (const cb of revokeListeners) cb(); },
+    onRevoke(cb) { revokeListeners.push(cb); },
     route(method, path, handler) { routes[`${method} ${path}`] = handler; },
     check() {
       if (svc.link === 'unreachable') fail('credential_unavailable', 'the identity service is unreachable');
@@ -118,7 +122,7 @@ export function fakeSigner({ device = 'enrolled' } = {}) {
 // plugins only reach it through their bound services.
 export function createCore({ clock = testClock(), random = testRandom(), profile = 'managed-cooperative', config = {}, identity = fakeIdentityService(), signer = fakeSigner(), budgets = {} } = {}) {
   if (!PROFILES.includes(profile)) throw new TypeError(`profile is one of ${PROFILES}`);
-  return {
+  const core = {
     clock, random, profile, identity, signer,
     config: deepFreeze(clone(config)),
     tables: new Map(),          // `${plugin}\0${table}` → Map(key → value)
@@ -128,6 +132,8 @@ export function createCore({ clock = testClock(), random = testRandom(), profile
     logs: [],
     subscriptions: new Map(),   // type → Set({ plugin, phase, handler })
     tokens: new Map(),          // `${reference}\0${task}\0${operation}` → { token, expiresAt }
+    minting: new Map(),         // same key → in-flight mint, shared by concurrent callers
+    tokenEpoch: 0,              // bumped whenever every token is dropped (stop, revocation)
     references: new Map(),      // opaque member reference → underlying reference
     approvals: new Map(),       // id → record
     budgets: new Map(Object.entries(clone(budgets)).map(([soul, pools]) => [soul, { ceilings: pools, reserved: new Map() }])),
@@ -136,7 +142,21 @@ export function createCore({ clock = testClock(), random = testRandom(), profile
     deviceRevoked: false,
     onDeviceRevoked: [],
   };
+  if (typeof identity.onRevoke === 'function') identity.onRevoke(() => revokeDevice(core, 'the identity service revoked the device'));
+  return core;
 }
+
+// Drop every short-lived token, including any mint still in flight.
+export function dropTokens(core) {
+  core.tokens.clear();
+  core.minting.clear();
+  core.tokenEpoch += 1;
+}
+
+// §4.4: init registers and runs read-only probes; it changes no host state.
+const refuseInInit = (core, plugin, what) => {
+  if (core.phases.get(plugin) === 'init') fail('host.init_write_forbidden', `${plugin}: init must not ${what}`);
+};
 
 // Replace every live token in a value before it is written to a receipt or
 // log. Tokens are short-lived and in memory only; none may reach disk.
@@ -146,7 +166,7 @@ export function redact(core, value) {
   const scrub = (v) => {
     if (typeof v === 'string') return live.reduce((s, tok) => s.split(tok).join('[redacted]'), v);
     if (Array.isArray(v)) return v.map(scrub);
-    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, scrub(x)]));
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [scrub(k), scrub(x)]));
     return v;
   };
   return scrub(clone(value));
@@ -157,7 +177,7 @@ export function redact(core, value) {
 export function revokeDevice(core, why = 'identity service reported the device revoked') {
   if (core.deviceRevoked) return;
   core.deviceRevoked = true;
-  core.tokens.clear();
+  dropTokens(core);
   core.receipts.push({ seq: core.receipts.length + 1, at: core.clock.now(), plugin: 'hq', profile: core.profile, kind: 'device.revoked', reason: why });
   for (const cb of core.onDeviceRevoked) cb(why);
 }
@@ -179,7 +199,7 @@ function storeService(core, plugin) {
     if (typeof table !== 'string' || !TABLE.test(table)) fail('host.invalid_request', `table ${JSON.stringify(table)} must match ${TABLE}`);
     return `${plugin}\0${table}`;
   };
-  const refuseInInit = () => { if (core.phases.get(plugin) === 'init') fail('host.init_write_forbidden', `${plugin}: init must not write authority state`); };
+  const noInitWrite = () => refuseInInit(core, plugin, 'write authority state');
   const serial = async (key, fn) => {
     const prev = core.locks.get(key) ?? Promise.resolve();
     let release;
@@ -201,8 +221,8 @@ function storeService(core, plugin) {
       get: (table, key) => clone(view(table).get(key)),
       has: (table, key) => view(table).has(key),
       list: (table) => [...view(table).entries()].map(([k, v]) => [k, clone(v)]),
-      put: (table, key, value) => { refuseInInit(); requireString(key, 'key'); wrote = true; view(table).set(key, clone(value)); },
-      delete: (table, key) => { refuseInInit(); wrote = true; return view(table).delete(key); },
+      put: (table, key, value) => { noInitWrite(); requireString(key, 'key'); wrote = true; view(table).set(key, clone(value)); },
+      delete: (table, key) => { noInitWrite(); wrote = true; return view(table).delete(key); },
     });
     const result = await fn(tx);
     if (wrote) for (const [key, rows] of staged) core.tables.set(key, rows);
@@ -216,7 +236,7 @@ function storeService(core, plugin) {
     tx: (fn) => serial(`${plugin}\0\0tx`, () => runTx(fn)),
     blob: Object.freeze({
       async put(bytes) {
-        refuseInInit();
+        noInitWrite();
         const buf = Buffer.from(bytes);
         const digest = `sha256:${createHash('sha256').update(buf).digest('hex')}`;
         core.blobs.set(`${plugin}\0${digest}`, buf);
@@ -245,6 +265,7 @@ function credentialsService(core, plugin) {
       requireString(reference, 'reference');
       requireString(task, 'task');
       requireString(operation, 'operation');
+      if (core.phases.get(plugin) === 'init') fail('host.init_network_forbidden', `${plugin}: init must not resolve credentials`);
       const underlying = core.references.get(reference) ?? reference;
       const key = tokenKey(underlying, task, operation);
       const cached = core.tokens.get(key);
@@ -253,11 +274,23 @@ function credentialsService(core, plugin) {
         if (cached.expiresAt > now) return cached.token;
         core.tokens.delete(key); // used until expiry and never after
       }
-      return viaIdentity(core, async () => {
+      // Concurrent callers for one (reference, task, operation) share one
+      // mint, so exactly one token exists for it and it is tracked.
+      if (core.minting.has(key)) return core.minting.get(key);
+      const epoch = core.tokenEpoch;
+      const pending = viaIdentity(core, async () => {
         const minted = await core.identity.mint({ reference: underlying, task, operation, now, random: core.random });
+        // Tokens were dropped while this mint was in flight (stop or
+        // revocation): don't cache it, and don't hand it out.
+        if (core.tokenEpoch !== epoch) {
+          if (core.deviceRevoked) fail('device_revoked', 'device revoked: re-enroll');
+          fail('host.context_revoked', 'credentials were dropped while this one was minted');
+        }
         core.tokens.set(key, minted);
         return minted.token;
-      });
+      }).finally(() => { if (core.minting.get(key) === pending) core.minting.delete(key); });
+      core.minting.set(key, pending);
+      return pending;
     },
     // The operation reached a terminal state: drop its token.
     release({ reference, task, operation } = {}) {
@@ -267,6 +300,7 @@ function credentialsService(core, plugin) {
     // For Equip: an opaque reference a member can hold. It names the
     // credential; it is not one, and resolving it needs HQ.
     issue(reference) {
+      refuseInInit(core, plugin, 'issue credential references');
       requireString(reference, 'reference');
       if (core.deviceRevoked) fail('device_revoked', 'device revoked: re-enroll');
       const opaque = `credref_${core.random.hex(16)}`;
@@ -294,6 +328,7 @@ function identityServiceService(core, plugin, routes) {
 function approvalsService(core, plugin) {
   return Object.freeze({
     async request({ action, digest, scope, reason, cost, expiry } = {}) {
+      refuseInInit(core, plugin, 'request approvals');
       if (action === undefined) fail('host.invalid_request', 'an approval request names its action');
       const actual = canonicalDigest(action);
       if (digest !== undefined && digest !== actual) fail('approval_mismatch', 'the stated digest is not the action\'s canonical digest', { stated: digest, actual });
@@ -337,9 +372,18 @@ function budgetsService(core, plugin) {
     if (!a || !(pool in a.ceilings)) fail('budget_exhausted', `no ${pool} budget for ${soul}`, { soul, pool });
     return a;
   };
+  // A plugin settles and releases only its own reservations.
+  const own = (id) => {
+    for (const a of core.budgets.values()) {
+      const r = a.reserved.get(id);
+      if (r && r.plugin === plugin) return r;
+    }
+    return fail('host.invalid_request', `no reservation ${id}`);
+  };
   const used = (a, pool) => [...a.reserved.values()].filter((r) => r.pool === pool).reduce((s, r) => s + r.amount, 0);
   return Object.freeze({
     async reserve({ soul, pool = 'working', amount } = {}) {
+      refuseInInit(core, plugin, 'reserve budget');
       requireString(soul, 'soul');
       if (!(Number.isFinite(amount) && amount >= 0)) fail('host.invalid_request', 'amount must be a non-negative number');
       const a = account(soul, pool);
@@ -348,16 +392,22 @@ function budgetsService(core, plugin) {
       a.reserved.set(id, { pool, amount, plugin });
       return id;
     },
+    // Settle records what the action actually cost. Spend that exceeds the
+    // reservation is recorded as spent, not refused: it already happened, and
+    // later reservations fail until the pool has headroom again.
     async settle(id, actual) {
-      for (const a of core.budgets.values()) {
-        const r = a.reserved.get(id);
-        if (r) { r.amount = actual; r.settled = true; return; }
-      }
-      fail('host.invalid_request', `no reservation ${id}`);
+      refuseInInit(core, plugin, 'settle budget');
+      if (!(Number.isFinite(actual) && actual >= 0)) fail('host.invalid_request', 'actual must be a non-negative number');
+      const r = own(id);
+      if (r.settled) fail('host.invalid_request', `reservation ${id} is already settled`);
+      r.amount = actual;
+      r.settled = true;
     },
     async release(id) {
-      for (const a of core.budgets.values()) if (a.reserved.get(id)?.settled === undefined && a.reserved.delete(id)) return;
-      fail('host.invalid_request', `no open reservation ${id}`);
+      refuseInInit(core, plugin, 'release budget');
+      const r = own(id);
+      if (r.settled) fail('host.invalid_request', `reservation ${id} is settled; only an open reservation is released`);
+      for (const a of core.budgets.values()) a.reserved.delete(id);
     },
     async remaining({ soul, pool = 'working' } = {}) {
       const a = account(soul, pool);
@@ -372,6 +422,7 @@ function budgetsService(core, plugin) {
 function launchService(core, plugin) {
   return Object.freeze({
     async member({ soul, role, principal, home, env = {} } = {}) {
+      refuseInInit(core, plugin, 'launch members');
       for (const [k, v] of Object.entries({ soul, role, principal, home })) requireString(v, k);
       for (const [k, v] of Object.entries(env)) {
         if (typeof v !== 'string') fail('host.invalid_request', `env ${k} must be a string`);
@@ -386,6 +437,7 @@ function launchService(core, plugin) {
       return m && m.plugin === plugin ? { id: m.id, soul: m.soul, role: m.role, state: m.state } : undefined;
     },
     async stop(id) {
+      refuseInInit(core, plugin, 'stop members');
       const m = core.members.get(id);
       if (m && m.plugin === plugin) m.state = 'stopped';
     },
@@ -396,6 +448,7 @@ function eventsService(core, plugin) {
   return Object.freeze({
     // In process, at most once; a failing subscriber is logged, never retried.
     publish(type, payload) {
+      refuseInInit(core, plugin, 'publish events');
       requireString(type, 'event type');
       const subs = [...(core.subscriptions.get(type) ?? [])];
       const value = clone(payload);
@@ -432,6 +485,7 @@ function receiptsService(core, plugin) {
   return Object.freeze({
     // Receipt fields per 0.4 §7; HQ adds sequence, time, plugin and profile.
     async append(record) {
+      refuseInInit(core, plugin, 'append receipts');
       if (!record || typeof record !== 'object' || Array.isArray(record)) fail('host.invalid_request', 'a receipt is an object');
       const r = { ...redact(core, record), seq: core.receipts.length + 1, at: core.clock.now(), plugin, profile: core.profile };
       core.receipts.push(r);
@@ -468,9 +522,27 @@ const FACTORIES = {
   budgets: budgetsService,
 };
 
+// Every call through a context checks that the context is still live. The
+// host revokes it when init fails or times out (an init still running in the
+// background can't touch host state) and when the host stops (a retained
+// context can't mint credentials after shutdown).
+function leased(service, lease, plugin) {
+  if (!service || typeof service !== 'object') return service;
+  const check = () => { if (!lease.live) fail('host.context_revoked', `${plugin}: this context is no longer live (${lease.why})`); };
+  const out = {};
+  for (const [k, v] of Object.entries(service)) {
+    if (typeof v === 'function') {
+      out[k] = v.constructor.name === 'AsyncFunction'
+        ? async (...args) => { check(); return v(...args); }
+        : (...args) => { check(); return v(...args); };
+    } else out[k] = leased(v, lease, plugin);
+  }
+  return Object.freeze(out);
+}
+
 // The services object a plugin's ctx carries: declared services work,
 // undeclared ones throw host.undeclared_service on access.
-export function bindServices(core, plugin, overrides = {}) {
+export function bindServices(core, plugin, overrides = {}, lease = { live: true }) {
   const declared = new Set(plugin.services);
   const services = {};
   for (const name of HOST_SERVICES) {
@@ -479,7 +551,7 @@ export function bindServices(core, plugin, overrides = {}) {
       enumerable: declared.has(name),
       get() {
         if (!declared.has(name)) fail('host.undeclared_service', `${plugin.name} did not declare the ${name} service`, { service: name });
-        instance ??= overrides[name] ? overrides[name](core, plugin.name) : FACTORIES[name](core, plugin.name, plugin.identityServiceRoutes);
+        instance ??= leased(overrides[name] ? overrides[name](core, plugin.name) : FACTORIES[name](core, plugin.name, plugin.identityServiceRoutes), lease, plugin.name);
         return instance;
       },
     });

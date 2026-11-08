@@ -23,6 +23,9 @@ export function supportWindow(current) {
 // Returns the negotiated version per contract the two share.
 export function negotiateVersions(offered, supported, { required = ['hq', 'wire'] } = {}) {
   const negotiated = {};
+  for (const contract of required) {
+    if (supported?.[contract] === undefined) fail('unsupported_version', `HQ supports no ${contract} version`, { contract });
+  }
   for (const [contract, ours] of Object.entries(supported)) {
     const theirs = offered?.[contract];
     if (theirs === undefined) {

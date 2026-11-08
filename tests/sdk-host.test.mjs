@@ -485,3 +485,123 @@ test('receipts, config, clock, random and profile', async () => {
   await receipts.append({ kind: 'relay.connected' });
   assert.deepEqual(host.receipts().at(-1), { kind: 'relay.connected', seq: 1, at: Date.UTC(2026, 0, 1), plugin: 'agent-comms', profile: 'managed-protected' });
 });
+
+// Review hardening (PR #86).
+
+test('a timed-out init keeps running in the background but can no longer touch host state', async () => {
+  const late = {};
+  const host = createTestHost({
+    initTimeoutMs: 30,
+    plugins: [plugin('slow', {
+      services: ['store', 'receipts'],
+      async init(ctx) {
+        await new Promise((r) => setTimeout(r, 120));
+        for (const [what, fn] of Object.entries({
+          tx: () => ctx.services.store.tx((tx) => tx.put('grants', 'g1', {})),
+          receipt: () => ctx.services.receipts.append({ kind: 'late' }),
+          register: async () => ctx.tools.register({ name: 'late-tool' }),
+        })) {
+          try { await fn(); late[what] = 'ok'; } catch (e) { late[what] = e.code; }
+        }
+      },
+    })],
+  });
+  await host.start();
+  assert.match(stateOf(host, 'slow').reason, /host.timeout/);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.deepEqual(late, { tx: 'host.context_revoked', receipt: 'host.context_revoked', register: 'host.context_revoked' });
+  assert.deepEqual(host.table('slow', 'grants'), {});
+  assert.equal(host.receipts().some((r) => r.kind === 'late'), false);
+  assert.deepEqual(host.registrations().tools, []);
+});
+
+test('init changes no host state through any service (§4.4)', async () => {
+  const tries = {
+    approvals: (s) => s.approvals.request({ action: { a: 1 } }),
+    budgets: (s) => s.budgets.reserve({ soul: 'soul_1', amount: 1 }),
+    issue: async (s) => s.credentials.issue('gh:repo'),
+    resolve: (s) => s.credentials.resolve('gh:repo', { task: 't', operation: 'o' }),
+    launch: (s) => s.launch.member({ soul: 's', role: 'r', principal: 'p', home: '/h' }),
+    receipts: (s) => s.receipts.append({ kind: 'x' }),
+    publish: async (s) => s.events.publish('x', {}),
+  };
+  const services = ['approvals', 'budgets', 'credentials', 'launch', 'receipts', 'events'];
+  const host = createTestHost({
+    budgets: { soul_1: { working: 5 } },
+    plugins: Object.entries(tries).map(([name, fn]) => plugin(name, { services, async init(ctx) { await fn(ctx.services); } })),
+  });
+  await host.start();
+  for (const name of Object.keys(tries)) {
+    assert.match(stateOf(host, name).reason, name === 'resolve' ? /host.init_network_forbidden/ : /host.init_write_forbidden/, name);
+  }
+  assert.equal(host.receipts().length, 0);
+  assert.deepEqual(host.members(), []);
+  assert.deepEqual(host.owner.pending(), []);
+});
+
+test('credentials: a context kept after stop cannot mint again', async () => {
+  const p = probe('agent-comms', ['credentials']);
+  const host = createTestHost({ plugins: [p.plugin] });
+  await host.start();
+  await p.ctx.services.credentials.resolve('gh:repo', { task: 't1', operation: 'op1' });
+  await host.stop();
+  assert.equal(host.tokensHeld(), 0);
+  await assert.rejects(p.ctx.services.credentials.resolve('gh:repo', { task: 't1', operation: 'op1' }), code('host.context_revoked'));
+  assert.equal(host.identity.mints.length, 1);
+});
+
+test('credentials: concurrent resolves share one mint; a mint in flight at revocation is not cached', async () => {
+  const p = probe('agent-comms', ['credentials']);
+  const host = createTestHost({ plugins: [p.plugin] });
+  await host.start();
+  const args = ['gh:repo', { task: 't1', operation: 'op1' }];
+  const [a, b] = await Promise.all([p.ctx.services.credentials.resolve(...args), p.ctx.services.credentials.resolve(...args)]);
+  assert.equal(a, b);
+  assert.equal(host.identity.mints.length, 1);
+  assert.equal(host.tokensHeld(), 1);
+
+  const inFlight = p.ctx.services.credentials.resolve('gh:repo', { task: 't1', operation: 'op2' });
+  host.identity.revoke();
+  assert.equal(host.tokensHeld(), 0, 'revocation drops cached tokens at once');
+  await assert.rejects(inFlight, code('device_revoked'));
+  assert.equal(host.tokensHeld(), 0);
+});
+
+test('a live token used as an object key is redacted from receipts and logs', async () => {
+  const p = probe('agent-comms', ['credentials', 'receipts', 'log']);
+  const host = createTestHost({ plugins: [p.plugin] });
+  await host.start();
+  const token = await p.ctx.services.credentials.resolve('gh:repo', { task: 't1', operation: 'op1' });
+  await p.ctx.services.receipts.append({ kind: 'k', [token]: 1, nested: { [token]: token } });
+  p.ctx.services.log.info('m', { [token]: true });
+  assert.equal(JSON.stringify(host.receipts()).includes(token), false);
+  assert.equal(JSON.stringify(host.logs()).includes(token), false);
+});
+
+test('budgets: a plugin settles only its own reservations, with a valid amount, once', async () => {
+  const a = probe('plugin-a', ['budgets']);
+  const b = probe('plugin-b', ['budgets']);
+  const host = createTestHost({ plugins: [a.plugin, b.plugin], budgets: { soul_1: { working: 10 } } });
+  await host.start();
+  const id = await a.ctx.services.budgets.reserve({ soul: 'soul_1', amount: 4 });
+  await assert.rejects(b.ctx.services.budgets.settle(id, 0), code('host.invalid_request'));
+  await assert.rejects(b.ctx.services.budgets.release(id), code('host.invalid_request'));
+  for (const bad of [-1, NaN, Infinity, '3', undefined]) await assert.rejects(a.ctx.services.budgets.settle(id, bad), code('host.invalid_request'), String(bad));
+  assert.equal(await a.ctx.services.budgets.remaining({ soul: 'soul_1' }), 6);
+  await a.ctx.services.budgets.settle(id, 12);
+  assert.equal(await a.ctx.services.budgets.remaining({ soul: 'soul_1' }), -2, 'spend over the reservation is recorded');
+  await assert.rejects(a.ctx.services.budgets.reserve({ soul: 'soul_1', amount: 0.5 }), code('budget_exhausted'));
+  await assert.rejects(a.ctx.services.budgets.settle(id, 1), code('host.invalid_request'), 'settled once');
+});
+
+test('re-enrolling a revoked device: the next start runs with a new key', async () => {
+  const p = probe('agent-comms', ['credentials']);
+  const host = createTestHost({ device: 'revoked', plugins: [p.plugin] });
+  assert.equal((await host.start()).mode, 'device_revoked');
+  assert.deepEqual(await host.dispatch('device.enroll', { auth: 'owner' }), { enrolled: true, restart: true, keyGeneration: 1 });
+  await host.stop();
+  const s = await host.start();
+  assert.equal(s.mode, 'running');
+  assert.equal(s.identity.device, 'enrolled');
+  assert.match(await p.ctx.services.credentials.resolve('gh:repo', { task: 't1', operation: 'op1' }), /^fake-token-/);
+});

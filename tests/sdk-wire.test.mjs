@@ -119,6 +119,17 @@ test('canonicalize refuses what JCS cannot encode and allows shared references',
   assert.throws(() => canonicalize(cyc), /cyclic/);
   const shared = { x: 1 };
   assert.equal(canonicalize({ a: shared, b: shared }), '{"a":{"x":1},"b":{"x":1}}');
+  // I-JSON: lone surrogates have no encoding, in values or keys; a pair is fine.
+  for (const s of ['\uD800', '\uDC00', 'a\uD800b', '\uDC00\uD800']) {
+    assert.throws(() => canonicalize({ a: s }), /lone surrogate/, JSON.stringify(s));
+    assert.throws(() => canonicalize({ [s]: 1 }), /lone surrogate/, `key ${JSON.stringify(s)}`);
+  }
+  assert.equal(canonicalize('\uD83D\uDE00'), '"\uD83D\uDE00"');
+  // Holes are refused, so [ , ] and [] can't share bytes; undefined is refused too.
+  assert.throws(() => canonicalize(new Array(1)), /sparse/);
+  assert.throws(() => canonicalize([1, , 2]), /sparse/); // eslint-disable-line no-sparse-arrays
+  assert.throws(() => canonicalize([undefined]), TypeError);
+  assert.equal(canonicalize([]), '[]');
 });
 
 test('version negotiation: N and N-1, highest common wins, fixtures refuse outside the window', () => {
@@ -133,6 +144,8 @@ test('version negotiation: N and N-1, highest common wins, fixtures refuse outsi
   assert.deepEqual(negotiateVersions({ hq: [1, 2], wire: [2] }, supportWindow({ hq: 2, wire: 2 })), { hq: 2, wire: 2 });
   assert.throws(() => negotiateVersions({ hq: [1] }, ours), code('unsupported_version'), 'wire missing');
   assert.deepEqual(negotiateVersions({ hq: [1], wire: [1] }, supportWindow({ hq: 1, wire: 1, task: 1 })), { hq: 1, wire: 1 }, 'task is optional by default');
+  assert.throws(() => negotiateVersions({ task: [1] }, {}, { required: ['task'] }), code('unsupported_version'), 'a required contract HQ does not support');
+  assert.throws(() => negotiateVersions({ hq: [1], wire: [1], task: [1] }, ours, { required: ['hq', 'wire', 'task'] }), code('unsupported_version'));
 });
 
 test('capabilities: unknown required capability is refused (T14)', () => {

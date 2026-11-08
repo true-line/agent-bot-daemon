@@ -423,8 +423,13 @@ discover → resolve → load → init (topological order) → start (topologica
 - **`init`** is idempotent. Apart from registering, it may run read-only
   probes (reading its config or the store, for example). It must
   not write authority state, call the identity service or start long-lived
-  work. It times out at 10 s.
-- **`stop`** gets a deadline.
+  work; every host service that changes state refuses during `init`. It
+  times out at 10 s. A failed or timed-out `init` loses its context: an
+  `init` still running in the background gets `host.context_revoked` from
+  every service and registration.
+- **`stop`** gets a deadline. After `stop`, every plugin context is revoked
+  and short-lived credentials are dropped, so a retained context cannot
+  mint a new one.
 
 **Bootstrap, with identity first and hard-required.** Identity is HQ core,
 not a plugin (PDR-0027), so it is ready before any plugin code runs:

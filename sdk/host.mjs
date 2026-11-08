@@ -16,7 +16,7 @@ import { fail, HostError } from './errors.mjs';
 import { HQ_OPERATIONS, SAFE_MODE_OPERATIONS, ADMISSION_OPERATIONS } from './operations.mjs';
 import { HOST_API, supportedHostApis, validateManifest } from './plugin.mjs';
 import { satisfies } from './semver.mjs';
-import { bindServices, createCore, dropSubscriptions, DEVICE_STATES, revokeDevice } from './services.mjs';
+import { bindServices, createCore, dropSubscriptions, dropTokens, DEVICE_STATES, revokeDevice } from './services.mjs';
 import { parseStrict } from './wire/strict-json.mjs';
 
 const KIND = /^[a-z][a-z0-9_.-]{0,63}$/;
@@ -53,6 +53,7 @@ export function createHost({
   const states = new Map();      // name → { state, reason }
   const provided = new Map();    // name → provides object
   const contexts = new Map();
+  const leases = new Map();      // name → { live, why } for the plugin's current context
   let order = [];
   let started = [];
   let mode = 'created';          // created | starting | running | safe | device_revoked | stopping | stopped
@@ -116,14 +117,17 @@ export function createHost({
     order = [...sorted, ...cyclic];
   }
 
-  function register(registry, plugin, key, value, label) {
+  const revokeLease = (name, why) => { const l = leases.get(name); if (l?.live) { l.live = false; l.why = why; } };
+
+  function register(registry, plugin, key, value, label, lease) {
+    if (!lease.live) fail('host.context_revoked', `${plugin}: this context is no longer live (${lease.why})`);
     if (core.phases.get(plugin) !== 'init') fail('host.registration_closed', `${plugin}: ${label} registration is only allowed during init`);
     const owner = registry.get(key);
     if (owner && owner.plugin !== plugin) fail('host.duplicate_registration', `${label} ${key} is already registered by ${owner.plugin}`, { key, owner: owner.plugin });
     registry.set(key, { ...value, plugin }); // the same plugin re-registering replaces its entry
   }
 
-  function makeContext(p) {
+  function makeContext(p, lease) {
     const name = p.name;
     const fn = (v, what) => { if (typeof v !== 'function') fail('host.invalid_request', `${name}: ${what} must be a function`); };
     const str = (v, what) => { if (typeof v !== 'string' || !v) fail('host.invalid_request', `${name}: ${what} must be a non-empty string`); };
@@ -132,7 +136,7 @@ export function createHost({
     const ctx = {
       name,
       version: p.version,
-      services: bindServices(core, p, services),
+      services: bindServices(core, p, services, lease),
       deps: Object.freeze(deps),
       hq: Object.freeze({
         register({ op, auth, schema, handler } = {}) {
@@ -140,14 +144,14 @@ export function createHost({
           if (op in CORE_OPERATIONS) fail('host.duplicate_registration', `${op} is answered by HQ core`, { key: op, owner: CORE_OPERATIONS[op] });
           if (auth !== HQ_OPERATIONS[op]) fail('host.auth_mismatch', `${name}: ${op} needs auth ${HQ_OPERATIONS[op]}, not ${auth}`, { op, auth, expected: HQ_OPERATIONS[op] });
           fn(handler, `${op} handler`);
-          register(registries.hq, name, op, { op, auth, schema, handler }, 'operation');
+          register(registries.hq, name, op, { op, auth, schema, handler }, 'operation', lease);
         },
       }),
       broker: Object.freeze({
         registerKind({ kind, schema, consume } = {}) {
           if (typeof kind !== 'string' || !KIND.test(kind)) fail('host.invalid_request', `${name}: kind ${JSON.stringify(kind)} must match ${KIND}`);
           fn(consume, `${kind} consume`);
-          register(registries.kinds, name, kind, { kind, schema, consume }, 'message kind');
+          register(registries.kinds, name, kind, { kind, schema, consume }, 'message kind', lease);
         },
         registerAdapter({ id, class: cls, validate, call, lookup } = {}) {
           str(id, 'adapter id');
@@ -155,23 +159,23 @@ export function createHost({
           fn(validate, `${id} validate`);
           fn(call, `${id} call`);
           if (lookup !== undefined) fn(lookup, `${id} lookup`);
-          register(registries.adapters, name, id, { id, class: cls, validate, call, lookup }, 'adapter');
+          register(registries.adapters, name, id, { id, class: cls, validate, call, lookup }, 'adapter', lease);
         },
       }),
-      tools: Object.freeze({ register(tool = {}) { str(tool.name, 'tool name'); register(registries.tools, name, tool.name, { tool }, 'tool'); } }),
-      commands: Object.freeze({ register(cmd = {}) { str(cmd.name, 'command name'); register(registries.commands, name, cmd.name, { cmd }, 'command'); } }),
+      tools: Object.freeze({ register(tool = {}) { str(tool.name, 'tool name'); register(registries.tools, name, tool.name, { tool }, 'tool', lease); } }),
+      commands: Object.freeze({ register(cmd = {}) { str(cmd.name, 'command name'); register(registries.commands, name, cmd.name, { cmd }, 'command', lease); } }),
       hooks: Object.freeze({
         register(hook = {}) {
           str(hook.name, 'hook name');
           fn(hook.handler, `${hook.name} handler`);
-          register(registries.hooks, name, hook.name, { hook }, 'hook');
+          register(registries.hooks, name, hook.name, { hook }, 'hook', lease);
         },
       }),
       readiness: Object.freeze({
         register(probe = {}) {
           str(probe.name, 'probe name');
           fn(probe.check, `${probe.name} check`);
-          register(registries.probes, name, probe.name, { probe }, 'readiness probe');
+          register(registries.probes, name, probe.name, { probe }, 'readiness probe', lease);
         },
       }),
     };
@@ -187,7 +191,10 @@ export function createHost({
     clearRegistrations(name);
     dropSubscriptions(core, name);
     provided.delete(name);
-    const ctx = makeContext(p);
+    revokeLease(name, 'superseded by a new init');
+    const lease = { live: true };
+    leases.set(name, lease);
+    const ctx = makeContext(p, lease);
     contexts.set(name, ctx);
     core.phases.set(name, 'init');
     try {
@@ -196,7 +203,11 @@ export function createHost({
       setState(name, 'initialized');
       return out ?? {};
     } catch (e) {
+      // A timed-out init may still be running: its context is revoked, so
+      // nothing it does from here reaches host state.
+      revokeLease(name, `init failed: ${describe(e)}`);
       clearRegistrations(name);
+      dropSubscriptions(core, name);
       degrade(name, `init failed: ${describe(e)}`);
       return undefined;
     } finally {
@@ -216,6 +227,7 @@ export function createHost({
     } catch (e) {
       dropSubscriptions(core, name, { phase: 'start' });
       core.phases.set(name, 'idle');
+      revokeLease(name, `start failed: ${describe(e)}`);
       degrade(name, `start failed: ${describe(e)}`);
       return false;
     }
@@ -279,7 +291,10 @@ export function createHost({
       }
     }
     started = [];
-    core.tokens.clear(); // short-lived credentials never outlive the process's run
+    // Every context is revoked, so a retained one can't mint again, and
+    // short-lived credentials never outlive the run.
+    for (const name of leases.keys()) revokeLease(name, `host stopped (${reason})`);
+    dropTokens(core);
     mode = 'stopped';
     modeReason = undefined;
     return report;
@@ -317,6 +332,10 @@ export function createHost({
   async function enroll(payload) {
     if (typeof core.signer.enroll !== 'function') fail('host.invalid_request', 'this signer cannot enroll');
     const result = await core.signer.enroll(structuredClone(payload));
+    // A new device key: the revoked record stays revoked at the identity
+    // service, but this host is enrolled again from its next start.
+    core.deviceRevoked = false;
+    dropTokens(core);
     core.receipts.push({ seq: core.receipts.length + 1, at: core.clock.now(), plugin: 'hq', profile: core.profile, kind: 'device.enrolled' });
     return { enrolled: true, restart: true, ...(result ?? {}) };
   }

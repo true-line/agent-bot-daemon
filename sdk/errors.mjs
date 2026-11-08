@@ -54,6 +54,7 @@ export const HOST_CODES = Object.freeze([
   'host.invalid_json',
   'host.invalid_request',
   'host.secret_in_env',
+  'host.context_revoked',
 ]);
 
 export const fail = (code, message, details) => {
