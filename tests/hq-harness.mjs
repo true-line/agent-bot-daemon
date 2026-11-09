@@ -7,14 +7,14 @@ import { join } from 'node:path';
 import { verify } from '../scripts/soul-contracts.mjs';
 import { testClock } from '../sdk/services.mjs';
 import { SCHEMA_NAMES } from '../hq/admission.mjs';
-import { TASK_SCHEMA_NAMES } from '../hq/tasks.mjs';
+import { TASK_SCHEMA_NAMES, TASK_WIRE_SCHEMA_NAMES } from '../hq/tasks.mjs';
 import { createHQ } from '../hq/hq.mjs';
 import { legacyDaemon, legacySigner } from '../hq/legacy.mjs';
 import { connectSocket } from '../hq/socket.mjs';
 
 export const contracts = verify().dir;
 const load = (contract, names) => names.map((n) => [n, JSON.parse(readFileSync(join(contracts, 'schemas', contract, `${n}.schema.json`), 'utf8'))]);
-export const schemas = Object.fromEntries([...load('hq/v1', SCHEMA_NAMES), ...load('task/v1', TASK_SCHEMA_NAMES)]);
+export const schemas = Object.fromEntries([...load('hq/v1', SCHEMA_NAMES), ...load('task/v1', TASK_SCHEMA_NAMES), ...load('wire/v1', TASK_WIRE_SCHEMA_NAMES)]);
 export const errorResponseSchema = JSON.parse(readFileSync(join(contracts, 'schemas/common/v1/error-response.schema.json'), 'utf8'));
 export const fixture = (rel) => JSON.parse(readFileSync(join(contracts, 'fixtures', rel), 'utf8'));
 

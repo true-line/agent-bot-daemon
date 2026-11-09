@@ -25,7 +25,7 @@ async function setup({ concurrentWriters = [] } = {}) {
     const rt = (role) => ({ ...r.admitted_runtimes.find((a) => a.role === role), epoch: r.installation_epoch, generation: r.lease_generation, session });
     return { lead: rt('lead'), spec: rt('specialist'), decision: r };
   };
-  const { lead, spec } = await admit();
+  const { lead, spec, decision } = await admit();
   const tasks = host.provided('hq-tasks');
   let n = 0;
   const request = (rt, task, transition, over = {}) => {
@@ -42,7 +42,7 @@ async function setup({ concurrentWriters = [] } = {}) {
     const r = await tasks.offer({ operation_id: `offer_${n}`, objective: 'Repair the seeded issue.', done_criteria: 'Checks pass.', accountable_soul: SOUL, write_scope: ['workspace:scratch'], ...over }, { from });
     return record(r.task_id);
   };
-  return { host, tasks, lead, spec, admit, request, commit, record, offer };
+  return { host, tasks, lead, spec, decision, admit, request, commit, record, offer };
 }
 
 const valid = (task) => assert.deepEqual(validate(schemas['task-record'], task), [], JSON.stringify(task));
@@ -254,12 +254,50 @@ test('T04: a peer offer claiming owner approval stays peer data; no grant or dir
   // Nothing but the offer was created: no grant, no directive, no other state.
   const kinds = new Set(t.host.receipts().map((x) => x.kind));
   assert.deepEqual([...kinds].filter((k) => /grant|directive|approval/.test(k)), []);
-  assert.deepEqual(t.host.registrations().kinds.map((k) => k.key), ['task.commit', 'task.offer']);
+  assert.deepEqual(t.host.registrations().kinds.map((k) => k.key).sort(), ['task.commit', 'task.directives', 'task.get', 'task.offer']);
+  // A peer's offer is never delivered as a directive.
+  assert.deepEqual((await t.tasks.directives({}, { runtime_id: t.lead.runtime_id })).directives, []);
   assert.deepEqual(Object.keys(t.host.table('hq-tasks', 'tasks')), [task.task_id]);
 
   // The owner's offer may carry a grant.
   const owned = await t.offer({ grant_reference: 'grant_7' });
   assert.equal(owned.grant_reference, 'grant_7');
+});
+
+test('a member reads its Soul\'s waiting directives: offered tasks from the owner or HQ, as wire/v1 directives', async () => {
+  const t = await setup();
+  const validDirective = (d) => assert.deepEqual(validate(schemas['directive-or-query'], d), [], JSON.stringify(d));
+  const owned = await t.offer({ grant_reference: 'grant_7', deadline: '2026-11-09T00:00:00Z' });
+  const fromHq = await t.offer({ write_scope: ['workspace:other'] }, { kind: 'hq' });
+  await t.offer({ write_scope: ['workspace:peer'] }, { kind: 'peer', soul: PEER });
+  const elsewhere = await t.offer({ accountable_soul: OTHER_SOUL, write_scope: ['workspace:elsewhere'] });
+
+  const { directives } = await t.tasks.directives({}, { runtime_id: t.lead.runtime_id });
+  directives.forEach(validDirective);
+  assert.deepEqual(directives.map((d) => [d.kind, d.issuer.principal, d.recipient, d.task_or_decision_reference.task_id]), [
+    ['directive', 'owner', SOUL, owned.task_id], ['directive', 'hq', SOUL, fromHq.task_id],
+  ]);
+  assert.deepEqual(directives[0].payload.task, owned);
+  assert.deepEqual(directives[0].policy_or_grant_reference, { grant_id: 'grant_7' });
+  assert.equal(directives[0].expiry, '2026-11-09T00:00:00Z', 'the task deadline');
+  assert.equal(directives[1].policy_or_grant_reference, undefined);
+  assert.equal(directives[1].expiry, t.decision.lease_expires_at, 'no deadline: good for the reader\'s lease');
+  assert.equal(JSON.stringify(directives).includes(elsewhere.task_id), false, 'another Soul\'s task is not this Soul\'s directive');
+
+  // A specialist of the Soul reads the same directives; only the lead can accept.
+  assert.equal((await t.tasks.directives(undefined, { runtime_id: t.spec.runtime_id })).directives.length, 2);
+  // An accepted task is no longer a waiting directive.
+  await t.commit(t.lead, owned, 'accepted');
+  assert.deepEqual((await t.tasks.directives({}, { runtime_id: t.lead.runtime_id })).directives.map((d) => d.task_or_decision_reference.task_id), [fromHq.task_id]);
+
+  // Refused: no bound runtime, fields, and a runtime a newer admission superseded.
+  await assert.rejects(t.tasks.directives({}, {}), code('caller_mismatch'));
+  await assert.rejects(t.tasks.directives({ soul_id: OTHER_SOUL }, { runtime_id: t.lead.runtime_id }), code('host.invalid_request'));
+  await t.admit('ep_b', { request_id: 'req_0002' });
+  await assert.rejects(t.tasks.directives({}, { runtime_id: t.lead.runtime_id }), code('lease_expired'));
+  assert.deepEqual(t.host.receipts().filter((r) => r.kind === 'task.directives.refused').map((r) => [r.code, r.caller]), [
+    ['caller_mismatch', 'unknown'], ['host.invalid_request', `runtime:${t.lead.runtime_id}`], ['lease_expired', `runtime:${t.lead.runtime_id}`],
+  ]);
 });
 
 test('the deadline sweep expires offers, and accepted or waiting tasks without a lease, but not running ones', async () => {

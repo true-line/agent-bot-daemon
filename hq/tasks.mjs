@@ -37,6 +37,16 @@
 // of those, so it is refused. Other HQ plugins reach the service through
 // `ctx.deps['hq-tasks']`.
 //
+// How work reaches a Soul (§9 row 14 needs both ends):
+// - The owner offers a task with `tasks.offer` on the control socket. The
+//   requester is the socket's auth class, `owner`.
+// - A bound member reads its Soul's waiting directives with the
+//   `task.directives` kind, and one of its Soul's tasks with `task.get`.
+//   A directive is a wire/v1 directive-or-query record for a task that is
+//   still offered and whose requester is the owner or HQ. A peer's offer is
+//   never a directive (T04). A member reads its own Soul's tasks only; a
+//   task of another Soul and an unknown task get the same refusal.
+//
 // Not here yet: budgets reservation on accept (§9 PR 19), the action ledger
 // and the `reconciling` state it drives (PR 19), and owner-cleared waiting
 // reasons (approvals, PR 21).
@@ -46,6 +56,9 @@ import { canonicalDigest } from '../sdk/wire/canonical-json.mjs';
 import { validate } from '../sdk/wire/schema.mjs';
 
 export const TASK_SCHEMA_NAMES = Object.freeze(['task-commitment', 'task-record']);
+// From wire/v1: the record a directive is delivered as.
+export const TASK_WIRE_SCHEMA_NAMES = Object.freeze(['directive-or-query']);
+const DIRECTIVE_ISSUERS = ['owner', 'hq'];
 export const ACTIVE = Object.freeze(['accepted', 'running', 'waiting', 'reconciling']);
 const TERMINAL = ['completed', 'failed', 'canceled', 'expired'];
 const LEAD_ROLE = 'lead';
@@ -93,14 +106,15 @@ export function deadlineMs(deadline) {
 
 export function tasksPlugin({ schemas }) {
   for (const n of TASK_SCHEMA_NAMES) if (!schemas?.[n]) throw new TypeError(`the task service needs the pinned task/v1 ${n} schema`);
+  for (const n of TASK_WIRE_SCHEMA_NAMES) if (!schemas?.[n]) throw new TypeError(`the task service needs the pinned wire/v1 ${n} schema`);
 
   const WAITING_REASONS = schemas['task-record'].properties?.waiting_reason?.enum ?? [];
-  const check = (name, value, inbound) => {
+  const check = (name, value, inbound, contract = 'task/v1') => {
     const errors = validate(schemas[name], value);
     if (!errors.length) return;
     const first = errors.slice(0, 3).map((e) => `${e.path} ${e.message}`).join('; ');
-    if (inbound) fail('host.invalid_request', `not a valid task/v1 ${name}: ${first}`, { errors: errors.slice(0, 10) });
-    throw new Error(`HQ built an invalid task/v1 ${name} (${first}); refusing to write it`);
+    if (inbound) fail('host.invalid_request', `not a valid ${contract} ${name}: ${first}`, { errors: errors.slice(0, 10) });
+    throw new Error(`HQ built an invalid ${contract} ${name} (${first}); refusing to write it`);
   };
 
   return definePlugin({
@@ -318,9 +332,62 @@ export function tasksPlugin({ schemas }) {
         if (!task) return null;
         return { task, proposals: tx.list('proposals').map(([, p]) => p).filter((p) => p.task_id === taskId) };
       });
+
+      // A member's reads, by the runtime the broker bound. `fn(tx, runtime)`
+      // runs in admission's queue, so the runtime is live while it reads.
+      // Refusals are receipted; a read changes nothing, so it leaves no
+      // receipt of its own.
+      async function memberRead(kind, bound, details, fn) {
+        try {
+          if (typeof bound !== 'string' || bound === '') fail('caller_mismatch', 'no bound runtime for this request');
+          return await admission.withBoundRuntime(bound, (rt) => store.tx((tx) => fn(tx, rt)));
+        } catch (e) {
+          if (e instanceof HostError) await receipts.append({ kind: `${kind}.refused`, code: e.code, ...details, caller: typeof bound === 'string' && bound ? `runtime:${bound}` : 'unknown' }).catch(() => {});
+          throw e;
+        }
+      }
+      const empty = (message) => message === undefined || message === null || (typeof message === 'object' && !Array.isArray(message) && Object.keys(message).length === 0);
+
+      // The waiting directives of the bound runtime's Soul: its offered
+      // tasks from the owner or HQ, oldest first. A directive with no
+      // deadline is good for the reader's lease and is read again after it.
+      const directives = (message, { runtime_id: bound } = {}) => memberRead('task.directives', bound, {}, (tx, rt) => {
+        if (!empty(message)) fail('host.invalid_request', 'task.directives takes no fields');
+        const out = [];
+        for (const [, task] of tx.list('tasks')) {
+          if (task.accountable_soul !== rt.soul_id || task.status !== 'offered' || !DIRECTIVE_ISSUERS.includes(task.requester)) continue;
+          const directive = {
+            message_id: `dir_${task.task_id}`,
+            issuer: { principal: task.requester },
+            recipient: rt.soul_id,
+            kind: 'directive',
+            task_or_decision_reference: { task_id: task.task_id },
+            ...(task.grant_reference ? { policy_or_grant_reference: { grant_id: task.grant_reference } } : {}),
+            expiry: task.deadline ?? iso(rt.lease_expires_at),
+            payload: { task },
+          };
+          check('directive-or-query', directive, false, 'wire/v1');
+          out.push(directive);
+        }
+        return { directives: out };
+      });
+
+      // One task of the bound runtime's Soul, with its proposals.
+      const memberGet = (message, { runtime_id: bound } = {}) => {
+        const taskId = typeof message?.task_id === 'string' ? message.task_id : undefined;
+        return memberRead('task.get', bound, taskId && OPERATION_ID.test(taskId) ? { task_id: taskId } : {}, (tx, rt) => {
+          if (!message || typeof message !== 'object' || Array.isArray(message) || Object.keys(message).length !== 1 || !taskId) fail('host.invalid_request', 'task.get takes { task_id }');
+          const task = tx.get('tasks', taskId);
+          if (!task || task.accountable_soul !== rt.soul_id) fail('caller_mismatch', `${taskId} is not a task of this runtime's Soul`);
+          return { task, proposals: tx.list('proposals').map(([, p]) => p).filter((p) => p.task_id === taskId) };
+        });
+      };
+
       const list = () => store.tx((tx) => tx.list('tasks').map(([, t]) => ({ task_id: t.task_id, status: t.status, revision: t.revision, accountable_soul: t.accountable_soul, ...(t.waiting_reason ? { waiting_reason: t.waiting_reason } : {}), ...(t.deadline ? { deadline: t.deadline } : {}) })));
 
       ctx.hq.register({ op: 'tasks.list', auth: 'owner', handler: async () => list() });
+      // The owner's offer: the requester is the control socket's auth class.
+      ctx.hq.register({ op: 'tasks.offer', auth: 'owner', handler: async (payload) => offer(payload, { from: { kind: 'owner' } }) });
       ctx.hq.register({
         op: 'tasks.get', auth: 'owner',
         handler: async (payload) => {
@@ -332,8 +399,10 @@ export function tasksPlugin({ schemas }) {
       // A member delivery carries a runtime, never an offer source, so offer()
       // refuses it (and receipts the refusal).
       ctx.broker.registerKind({ kind: 'task.offer', consume: (message) => offer(message, {}) });
+      ctx.broker.registerKind({ kind: 'task.directives', consume: directives });
+      ctx.broker.registerKind({ kind: 'task.get', consume: memberGet });
 
-      return { provides: { offer, commit, wait, cancel, expire, get, list } };
+      return { provides: { offer, commit, wait, cancel, expire, get, list, directives } };
     },
   });
 }

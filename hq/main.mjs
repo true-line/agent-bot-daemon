@@ -13,7 +13,7 @@
 // DIR defaults to $AGENT_BOT_HQ_HOME, else ~/.agent-bot-hq. It is separate
 // from the existing daemon's ~/.agent-bot, which HQ leaves unchanged.
 //
-// `run` loads the hq/v1 and task/v1 schemas from the pinned soul-contracts release
+// `run` loads the hq/v1, task/v1 and wire/v1 schemas it uses from the pinned soul-contracts release
 // (scripts/soul-contracts.mjs verifies the digest; a development checkout
 // fetches it into .cache/ on first use). A release will vendor the pinned
 // tree with the plugins (§4.5) instead.
@@ -23,7 +23,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verify } from '../scripts/soul-contracts.mjs';
 import { SCHEMA_NAMES } from './admission.mjs';
-import { TASK_SCHEMA_NAMES } from './tasks.mjs';
+import { TASK_SCHEMA_NAMES, TASK_WIRE_SCHEMA_NAMES } from './tasks.mjs';
 import { createHQ } from './hq.mjs';
 import { readPins } from './plugins.mjs';
 import { connectSocket } from './socket.mjs';
@@ -47,7 +47,7 @@ function parse(argv) {
 function loadSchemas() {
   const { dir } = verify();
   const load = (contract, names) => names.map((n) => [n, JSON.parse(readFileSync(join(dir, 'schemas', contract, `${n}.schema.json`), 'utf8'))]);
-  return Object.fromEntries([...load('hq/v1', SCHEMA_NAMES), ...load('task/v1', TASK_SCHEMA_NAMES)]);
+  return Object.fromEntries([...load('hq/v1', SCHEMA_NAMES), ...load('task/v1', TASK_SCHEMA_NAMES), ...load('wire/v1', TASK_WIRE_SCHEMA_NAMES)]);
 }
 
 async function ask(home, op) {

@@ -154,6 +154,48 @@ test('a member bound by its channel binding commits a task over the broker socke
   } finally { await t.done(); }
 });
 
+test('the owner offers a task on the control socket; a bound member reads the directive and the task, and runs it', async () => {
+  const t = await setup();
+  try {
+    const owner = await t.owner();
+    const offered = await owner.request('tasks.offer', { operation_id: 'owner_offer_1', objective: 'Repair the seeded issue.', done_criteria: 'Checks pass.', accountable_soul: SOUL, write_scope: ['workspace:scratch'] });
+    assert.equal(offered.ok, true, JSON.stringify(offered));
+    assert.equal(offered.result.by, 'owner');
+    const taskId = offered.result.task_id;
+    // The same operation returns the same receipt; a claimed requester is refused.
+    assert.deepEqual((await owner.request('tasks.offer', { operation_id: 'owner_offer_1', objective: 'Repair the seeded issue.', done_criteria: 'Checks pass.', accountable_soul: SOUL, write_scope: ['workspace:scratch'] })).result, offered.result);
+    assert.equal((await owner.request('tasks.offer', { operation_id: 'owner_offer_2', objective: 'x', done_criteria: 'y', accountable_soul: SOUL, requester: 'hq' })).host_refusal.code, 'host.invalid_request');
+    // An entry point cannot offer: the op belongs to the owner's socket.
+    assert.equal((await t.entry.request('tasks.offer', { operation_id: 'ep_offer', objective: 'x', done_criteria: 'y', accountable_soul: SOUL })).ok, false);
+
+    const lead = await t.bound(t.lead);
+    const spec = await t.bound(t.spec);
+    const read = await lead.request('task.directives', {});
+    assert.equal(read.ok, true, JSON.stringify(read));
+    assert.deepEqual(read.result.directives.map((d) => [d.kind, d.issuer.principal, d.task_or_decision_reference.task_id]), [['directive', 'owner', taskId]]);
+    const task = read.result.directives[0].payload.task;
+    assert.deepEqual(task, await t.record(taskId));
+
+    for (const to of ['accepted', 'running']) assert.equal((await lead.request('task.commit', t.request(t.lead, await t.record(taskId), to))).result.outcome, 'committed');
+    assert.deepEqual((await lead.request('task.directives', {})).result.directives, []);
+    await spec.request('task.commit', t.request(t.spec, await t.record(taskId), 'completed', { result_ref: 'artifact_spec' }));
+    const seen = await spec.request('task.get', { task_id: taskId });
+    assert.equal(seen.result.task.status, 'running');
+    assert.deepEqual(seen.result.proposals.map((p) => [p.role, p.transition, p.evidence]), [['specialist', 'completed', ['artifact_spec']]]);
+
+    // Reads are scoped to the bound runtime's Soul and need a bind first.
+    const other = await t.tasks.offer({ operation_id: 'other_soul', objective: 'x', done_criteria: 'y', accountable_soul: 'agent_11111111-2222-4333-8444-555555555555' }, { from: { kind: 'owner' } });
+    assert.equal((await lead.request('task.get', { task_id: other.task_id })).refusal.error, 'caller_mismatch');
+    assert.equal((await lead.request('task.get', { task_id: 'task_unknown' })).refusal.error, 'caller_mismatch');
+    assert.equal((await lead.request('task.get', { task_id: taskId, soul_id: SOUL })).host_refusal.code, 'host.invalid_request');
+    const unbound = await t.member();
+    assert.equal((await unbound.request('task.directives', {})).refusal.error, 'caller_mismatch');
+    assert.equal((await unbound.request('task.get', { task_id: taskId })).refusal.error, 'caller_mismatch');
+    // No read carries a channel binding.
+    assert.equal(JSON.stringify([read, seen]).includes(t.lead.channel_binding), false);
+  } finally { await t.done(); }
+});
+
 test('a frame before bind, a wrong binding, a second bind, and a request for another runtime are refused', async () => {
   const t = await setup();
   try {
