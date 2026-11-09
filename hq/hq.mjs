@@ -89,7 +89,7 @@ export function validateConfig(c) {
 
 export function createHQ({
   home,
-  schemas,                       // pinned schemas by name: hq/v1 (admission.mjs SCHEMA_NAMES) and task/v1 (tasks.mjs TASK_SCHEMA_NAMES)
+  schemas,                       // pinned schemas by name: hq/v1 (admission.mjs SCHEMA_NAMES), task/v1 and wire/v1 (tasks.mjs TASK_SCHEMA_NAMES, TASK_WIRE_SCHEMA_NAMES)
   config,                        // defaults to <home>/config.json
   signer = legacySigner(),
   legacy,                        // defaults to legacyDaemon with the config's supervise flag

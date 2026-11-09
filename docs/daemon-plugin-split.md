@@ -687,6 +687,15 @@ host side of that split.
   generation, and that it is the runtime the request names. A member's
   `task.offer` is delivered and refused there, because an offer's source is
   the owner, HQ or a peer Soul.
+- **Directives and task reads.** The socket is request and reply, so a
+  Soul pulls its work. A bound member sends `task.directives` and receives
+  its Soul's waiting directives: one wire/v1 directive-or-query record for
+  each task that is still offered and whose requester is the owner or HQ.
+  A peer's offer is never a directive (T04). A directive with no deadline
+  expires with the reader's lease. `task.get` returns one task of the
+  member's Soul with its proposals; a task of another Soul and an unknown
+  task are both `caller_mismatch`. The owner makes the offer with
+  `tasks.offer` on the control socket (§7.3).
 - **What this does not claim.** In the cooperative profile a channel
   binding is a bearer secret in the member's environment, so a member that
   reads another member's binding can speak for it. HQ reports
@@ -857,7 +866,7 @@ Every approved operation is available through both (0.4 §3, §8).
 | Status | `status` (profile in force, plugins and versions, identity-service and relay reachability, degraded reasons) |
 | Lifecycle | `start`, `stop`, `pause`, `resume`, `drain`, `sleep` (schedule), `move`, `fork`, `accept-revision`, `rollback-revision`, `retire` |
 | Authority | `grants.list/create/revoke`, `approvals.list/decide`, `destinations.list/approve`, `budgets.get/set` (ceiling and sub-allocations) |
-| Work | `tasks.list/get` (state, waiting reason, evidence), `receipts.query`, `actions.unknown` with `actions.resolve` (owner-resolved outcome) |
+| Work | `tasks.offer` (the owner's task offer; the requester is the socket's auth class), `tasks.list/get` (state, waiting reason, evidence), `receipts.query`, `actions.unknown` with `actions.resolve` (owner-resolved outcome) |
 | Souls | `souls.list/get` (roles, readiness, unevaluated harnesses), `candidates.list/get` (change list, per-cell matrix, provenance warnings, cost), `evaluations.get` |
 | Device | `device.status`, `device.enroll` (starts the identity-service device grant) |
 | Events | `events.subscribe` (stream on the same socket) |
@@ -932,7 +941,7 @@ repository that does the work; this repository tracks only its own rows.
 | 12 | agent-bot-daemon | WP2 | **HQ skeleton** in its own account: store, control socket with owner sessions, profile reporting, `hq/v1` Hello/Admit/Equip/Ready/Lease. It **supervises the existing daemon unchanged** (strangler). | HQ reports `managed cooperative` honestly; T14 |
 | 13 | agent-bot-daemon | WP4 | **Task service in HQ's store** (`task/v1`, CAS, operation keys, proposals versus commitments, write-scope exclusion), as the `task-v1` provider; agent-comms mirrors the records through its codec and carries directives and queries as broker kinds (platform PDR-0024) | T04, T05, T20 |
 | 13b | agent-bot-daemon, agent-comms | WP4 | **Broker host and broker plugin** (§4.9). agent-bot-daemon: the member broker socket, `ctx.broker.serve` and `ctx.broker.deliver`, and runtime binding by channel binding. agent-comms: broker mode as an HQ plugin that binds members and delivers `task.commit` and `task.offer`. Added by the owner on 2026-11-08 so row 14 reaches the task service through HQ. | A member bound by its channel binding commits a task over the broker socket; a wrong, reused or superseded binding is refused; T05 holds over the socket |
-| 14 | agent-bot-souls | WP3 | **Entry point** `agent-bot soul run`: ACP front door and terminal chat; lead plus specialist on fake adapters; role routing; handoff notes; recovery ladder | One task completes with scoped proposals and one final commitment |
+| 14 | agent-bot-souls | WP3 | **Entry point** `agent-bot-souls run`, reached as `agent-bot souls run` (platform PDR-0037): ACP front door and terminal chat; lead plus specialist on fake adapters; role routing; handoff notes; recovery ladder | One task completes with scoped proposals and one final commitment |
 
 ### Stage 2a: member isolation (WP2)
 
