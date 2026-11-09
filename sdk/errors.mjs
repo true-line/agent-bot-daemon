@@ -11,6 +11,13 @@
 //   `host_refusal` field (hq/socket.mjs) until soul-contracts specifies the
 //   hq/v1 request envelope.
 
+// A plugin from another repository carries its own copy of this SDK, so its
+// HostError is a different class from HQ's. The brand is a registered
+// symbol, the same in every copy and every module instance, and
+// `instanceof HostError` checks the brand, never the class identity. Without
+// it HQ would answer a plugin's refusal as `host.internal`.
+const BRAND = Symbol.for('agent-bot.sdk.HostError');
+
 export class HostError extends Error {
   constructor(code, message, details = undefined) {
     super(message);
@@ -21,6 +28,14 @@ export class HostError extends Error {
 
   get retryable() {
     return RETRYABLE.has(this.code);
+  }
+
+  get [BRAND]() {
+    return true;
+  }
+
+  static [Symbol.hasInstance](value) {
+    return value !== null && typeof value === 'object' && value[BRAND] === true;
   }
 }
 
