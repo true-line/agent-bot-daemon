@@ -5,6 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { statSync } from 'node:fs';
+import { HostError } from '../sdk/errors.mjs';
 import { definePlugin } from '../sdk/plugin.mjs';
 import { createTestHost } from '../sdk/test-host.mjs';
 import { referenceBroker } from './broker-fixture.mjs';
@@ -181,6 +182,44 @@ test('a frame before bind, a wrong binding, a second bind, and a request for ano
     const refused = t.hq.core.receipts.filter((r) => r.kind === 'hq.bind.refused').map((r) => r.code);
     assert.deepEqual(refused, ['caller_mismatch', 'caller_mismatch', 'host.invalid_request', 'host.invalid_request']);
   } finally { await t.done(); }
+});
+
+// A broker plugin from another repository (agent-comms, §9 row 13b) carries
+// its own copy of the SDK. Its refusals reach the member as refusals, not as
+// host.internal.
+test('a refusal from a plugin built on another copy of the SDK reaches the member unchanged', async () => {
+  const copy = await import(`../sdk/errors.mjs?copy=${Date.now()}`);
+  assert.notEqual(copy.HostError, HostError);
+  const t = await startHQ({ plugins: [definePlugin({
+    name: 'copied-broker',
+    version: '1.0.0',
+    hostApi: 1,
+    async init(ctx) {
+      ctx.broker.serve({ accept(kind) {
+        if (kind === 'bind') copy.fail('caller_mismatch', 'the channel binding does not match');
+        copy.fail('host.invalid_request', 'only bind here');
+      } });
+    },
+  })] });
+  try {
+    const m = await t.member();
+    const bind = await m.request('bind', {});
+    assert.equal(bind.refusal.error, 'caller_mismatch', JSON.stringify(bind));
+    assert.equal((await m.request('other.kind', {})).host_refusal.code, 'host.invalid_request');
+    const failed = await m.request('bind', {});
+    assert.notEqual(failed.host_refusal?.code, 'host.internal');
+  } finally { await t.done(); }
+});
+
+test('HostError recognises every copy of the SDK and nothing else', async () => {
+  const copy = await import(`../sdk/errors.mjs?copy=recognise-${Date.now()}`);
+  const theirs = new copy.HostError('caller_mismatch', 'x');
+  assert.ok(theirs instanceof HostError);
+  assert.ok(new HostError('caller_mismatch', 'x') instanceof copy.HostError);
+  assert.ok(new HostError('lease_expired', 'x').retryable);
+  for (const v of [new Error('x'), { code: 'caller_mismatch', name: 'HostError' }, null, undefined, 'HostError', 1]) {
+    assert.equal(v instanceof HostError, false, String(v));
+  }
 });
 
 test('a superseded or expired runtime is refused, at bind and on a connection already bound', async () => {

@@ -45,7 +45,7 @@ assert.ok(r.ok, JSON.stringify(r.results.filter((x) => !x.ok)));
 | `test-host.mjs` | `createTestHost`, which adds a fake identity service with Ed25519-signed canned responses, a fake signer, a deterministic clock and random, and fake member principals. | §4.6 |
 | `conformance.mjs` | `checkPlugin`, the plugin conformance suite. | §4.6 |
 | `semver.mjs` | Plugin versions and dependency ranges. | §4.5 |
-| `errors.mjs` | `HostError`, registry codes (wire) and `host.*` codes (in HQ only). | §4.7 |
+| `errors.mjs` | `HostError`, registry codes (wire) and `host.*` codes (in HQ only). `instanceof HostError` holds for an error from any copy of the SDK, so a plugin from another repository is answered with its own refusal code. | §4.7 |
 | `wire/` | RFC 8785 canonical JSON and digests, strict JSON parsing, a JSON Schema validator for the keywords the pinned schemas use (it refuses any other keyword), and N/N−1 version and capability negotiation. | §2.3, §4.5 |
 
 ## Identity is HQ core
