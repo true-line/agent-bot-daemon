@@ -352,7 +352,10 @@ export function createHost({
     if (mode === 'safe' && !SAFE_MODE_OPERATIONS.includes(op)) fail('host.safe_mode', `safe mode (${modeReason}): ${op} is unavailable`, { op });
     if (ADMISSION_OPERATIONS.includes(op) && !admissions) fail('host.admissions_closed', `${op}: admissions are not open`, { op });
     if (op === 'status') return status();
-    if (op === 'device.status') return { device: device ?? 'unknown', link: core.identity.link };
+    if (op === 'device.status') {
+      const enrollment = typeof core.signer.enrollmentProgress === 'function' ? core.signer.enrollmentProgress() : undefined;
+      return { device: device ?? 'unknown', link: core.identity.link, ...(enrollment ? { enrollment } : {}) };
+    }
     if (op === 'device.enroll') return enroll(payload);
     const reg = registries.hq.get(op);
     if (!reg) fail('host.unknown_operation', `no plugin implements ${op}`, { op });
@@ -366,6 +369,9 @@ export function createHost({
   async function enroll(payload) {
     if (typeof core.signer.enroll !== 'function') fail('host.invalid_request', 'this signer cannot enroll');
     const result = await core.signer.enroll(structuredClone(payload));
+    // A grant the owner still has to approve: nothing is enrolled yet, and
+    // the signer reports the outcome itself (device.status shows it).
+    if (result?.pending === true) return { enrolled: false, ...result };
     // A new device key: the revoked record stays revoked at the identity
     // service, but this host is enrolled again from its next start.
     core.deviceRevoked = false;
