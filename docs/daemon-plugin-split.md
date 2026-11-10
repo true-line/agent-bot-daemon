@@ -1052,8 +1052,15 @@ other privilege.
 - The first form is a sudoers rule. A systemd unit per member can replace it
   without changing what HQ asks for.
 - Before the provisioner runs any command as root, the owner sees the
-  request and accepts it in the local web UI or on the website. Nothing
-  privileged runs on an agent's word alone.
+  request and accepts it in the local web UI. Nothing privileged runs on an
+  agent's word alone.
+- **Where that approval lives, for this slice (owner, 2026-11-10).** In the
+  Approvals tab of today's local web UI in agent-bot-identity
+  (`agent-web.mjs`), which is already writable and already holds
+  agent-machine proposals bound to a digest of the exact operation. HQ's own
+  UI stays read-only for the pilot (Q6 is unchanged). The approval becomes an
+  HQ approval record when HQ's UI gains a write path (row 21). The hosted
+  website can show that a request is waiting; it does not approve or run it.
 - agent-bot-machine also creates the member accounts and the endpoint
   directories of 16a. Its contract is
   [agent-bot-machine#470](https://github.com/true-line/agent-bot-machine/issues/470).
