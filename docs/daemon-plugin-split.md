@@ -952,7 +952,11 @@ repository that does the work; this repository tracks only its own rows.
 | 15b | agent-bot-daemon | WP2 | **Hardware helpers, behind the `hardwareSigner` feature flag:** a TPM 2.0 helper for the Linux reference host, and the Secure Enclave helper for macOS (needs a Developer ID build with a provisioning profile, D4). Off by default; rows 15c, 15d and 16 do not wait for it | Each helper passes the 15a helper tests on its platform, with a non-exportable key, and is qualified on real hardware before the flag's default changes |
 | 15c | agent-bot-daemon, agent-bot-identity | WP2 | **Enrollment on the signer's key** (`hq/enrollment.mjs`, opt-in with `enrollment.source: hq`; `legacy` stays the default until the identity-service link can use the enrolled device; a real enrollment on a software key succeeded on 2026-11-10): device enrollment, re-enrollment (`enroll --force`, a fresh key generation) and the jwt-bearer assertion move into HQ and are signed by the signer | The identity service's device record names the signer's key, with the `key_storage` the signer reports (`software` unless `hardwareSigner` is on); device status no longer comes from the legacy bridge |
 | 15d | agent-bot-identity, agent-comms | WP2 | **Soul tokens without a key file:** HQ asks the identity service for `v2` soul tokens (the agent-bot-comms broker already verifies them) and `vouch-key.pem` is removed, with the keyd grants it signs today | No `vouch-key.pem` on the host; soul token `v1` off. With `hardwareSigner` on there is no signing key file at all; T02 |
-| 16 | agent-bot-daemon | WP2 | **Linux protected profile:** per-member service identities, namespaces, broker socket and workspace views as the only exits, caller-bound grant handles | T01–T03, T21 |
+| 16 | agent-bot-daemon | WP2 | **Linux protected profile:** per-member service identities, namespaces, broker socket and workspace views as the only exits, caller-bound grant handles. Proposed in the four slices below. | T01–T03, T21 |
+| 16a | agent-bot-daemon | WP2 | **Caller identity from the kernel:** HQ learns which OS account is on a member connection from the host, never from a field the member sends. A runtime belongs to the member account it was admitted for; a binding or grant handle presented from any other account is `caller_mismatch` before the operation, and still after an HQ restart | T01 on two real accounts: member B presents member A's binding and handle and is refused |
+| 16b | agent-bot-daemon | WP2 | **Member accounts and HQ-controlled launch:** HQ starts every member runtime under that member's own account through a launcher HQ cannot widen; member state lives in the member's home at 0700; HQ's state directory admits only the HQ account | A member reads neither another member's state nor any file in HQ's state directory, and cannot run HQ's signer or credential tooling (T02) |
+| 16c | agent-bot-daemon | WP2 | **Exits:** a member account has no network route of its own. The member broker socket and its workspace view are the only ways out | A member's direct connection to a provider or service is blocked by the host, while the same request through the broker socket is delivered (T03) |
+| 16d | agent-bot-daemon | WP2 | **Qualification and the label:** the hostile-member suite (T01–T03, T21) as one suite that row 29 reuses on macOS; a qualification record for the host; `managed-protected` reported only when the record, member accounts, the HQ account and a hardware key all hold | The suite passes on the Linux reference host under `managed-protected`; run under `managed-cooperative`, every receipt names cooperative and each protected claim is `profile_insufficient` (T21) |
 
 **The hardware signer is a feature flag (`features.hardwareSigner`, off by
 default).** The TPM and Secure Enclave helpers cannot be tested as thoroughly
@@ -988,6 +992,33 @@ because it and the owner-decision evidence are keyed by the daemon's Ed25519
 host key; and a broker that cannot refresh the service's signing keys rejects
 every version 2 token without logging why. Row 15d is not done until the
 first is resolved and the keyd grants no longer need the file.
+
+**Row 16 is proposed as four slices, in this order.** 16a comes first because
+it changes what HQ trusts: today a channel binding is a bearer secret (§4.9),
+and nothing after it is worth building on that. 16d comes last because it only
+reports what the other three enforce.
+
+- **The slices do not wait for the real accounts.** On an owner's host the HQ
+  account and the member accounts are created by agent-bot-machine (D1, D6),
+  which has not delivered that slice, and HQ's move into its own account is
+  [issue 88](https://github.com/true-line/agent-bot-hq/issues/88). The CI job
+  creates throwaway accounts itself, so each slice is built and tested on real
+  account separation in CI. A real host reports `managed-protected` only
+  after both of those land.
+- **The label still needs a hardware key.** With `features.hardwareSigner`
+  off, a host can pass all of row 16 and still report `managed-cooperative`,
+  with the software key as the stated reason (row 15).
+- **macOS is unaffected.** Every slice is refused or inert off Linux, and
+  macOS keeps reporting `managed-cooperative` until row 29.
+
+Open questions for the owner, each with a recommendation; none blocks 16a's
+design review, and each is settled in the slice that needs it:
+
+| Question | Recommendation |
+| --- | --- |
+| How does HQ learn the caller's account, given that Node has no peer-credential call? | One broker endpoint per member account, in a directory only that account can enter, so the file system identifies the caller. No native code. The alternative is a small native helper that reads the socket's peer credentials, reviewed under D5 |
+| What lets HQ start a process as a member account without being root? | A launcher installed by agent-bot-machine that accepts only the HQ account and only member accounts as targets. It is the provisioner's to install, so its contract is agreed with that repository first |
+| How is egress blocked? | A per-account firewall rule set by the provisioner, checked by HQ at admission. A network namespace per member is stronger and can replace it later without changing the test |
 
 ### Stage 2b: brokered adapters (WP2, WP4)
 
