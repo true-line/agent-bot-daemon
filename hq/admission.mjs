@@ -16,6 +16,12 @@
 // - Caller binding: the admission-socket connection that sent Hello owns its
 //   runtimes; any other connection gets `caller_mismatch` (T01, in the
 //   cooperative form: HQ cannot yet tell members apart, only connections).
+// - Member accounts (§9 row 16a): where the owner's config gives a member its
+//   own OS account, its runtime is bound to that account at admission. On
+//   the broker socket such a runtime binds only from that account's own
+//   endpoint (the file system identifies the caller), and only with a keyed
+//   proof over an HQ challenge, so the channel binding is never sent. Both
+//   must hold; either failing is `caller_mismatch`, also after a restart.
 // - Profile: the one in force, with a warning when weaker than requested (R8).
 //
 // It provides withLiveRuntime to the task service (hq-tasks), so a task
@@ -26,7 +32,7 @@
 //
 // Equip carries no credentials yet: grants and credential references arrive
 // with §9 PRs 18 and 21. It hands out one opaque grant handle per member.
-import { timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { definePlugin } from '../sdk/plugin.mjs';
 import { fail, HostError } from '../sdk/errors.mjs';
 import { canonicalDigest } from '../sdk/wire/canonical-json.mjs';
@@ -41,6 +47,21 @@ const RUNTIME_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 // hq/v1 admission-result admitted_runtimes[].channel_binding.
 const CHANNEL_BINDING = /^[A-Za-z0-9_-]{16,128}$/;
 
+// A bind challenge: 32 random bytes as hex, and the proof over it.
+const NONCE = /^[0-9a-f]{64}$/;
+const PROOF = /^[0-9a-f]{64}$/;
+export const BIND_CONTEXT = 'agent-bot-hq/bind/v1';
+const CHALLENGE_TTL_MS = 60_000;
+const MAX_CHALLENGES = 4096;
+
+// The proof a runtime sends in `bind`: HMAC-SHA-256, keyed with the channel
+// binding it got at admission, over the context label, HQ's nonce and its
+// runtime ID. A keyed proof, not a public-key signature: HQ issued the key
+// and holds it too. It proves possession without sending the binding.
+export function bindProof(channelBinding, nonce, runtimeId) {
+  return createHmac('sha256', Buffer.from(channelBinding, 'utf8')).update(`${BIND_CONTEXT}\n${nonce}\n${runtimeId}`).digest('hex');
+}
+
 // Compare two bindings without leaking where they differ.
 const sameBinding = (a, b) => {
   const x = Buffer.from(a);
@@ -50,7 +71,11 @@ const sameBinding = (a, b) => {
 
 const iso = (ms) => new Date(ms).toISOString();
 
-export function admissionPlugin({ schemas, profileReasons = () => [] }) {
+// memberAccount(soul, member) is the OS account the owner's config gives a
+// member ({ account, uid }), or undefined. callerOf(connection) is the account
+// a broker connection arrived from ({ account, uid }), or undefined on the
+// shared socket. HQ core supplies both; a member never does.
+export function admissionPlugin({ schemas, profileReasons = () => [], memberAccount = () => undefined, callerOf: connectionAccount = () => undefined }) {
   for (const n of SCHEMA_NAMES) if (!schemas?.[n]) throw new TypeError(`admission needs the pinned hq/v1 ${n} schema`);
 
   const check = (name, value, inbound) => {
@@ -148,6 +173,9 @@ export function admissionPlugin({ schemas, profileReasons = () => [] }) {
               soul_id: payload.soul_id, installation_id: payload.installation_id, member_id: a.member_id, role: a.role,
               channel_binding: a.channel_binding, caller, epoch, lease_generation: leaseGeneration,
               lease_expires_at: leaseExpires, renewal_sequence: 0, ready: false, superseded: false,
+              // The account this runtime belongs to, fixed at admission and
+              // kept in the store, so a restart cannot loosen it.
+              ...(memberAccount(payload.soul_id, a.member_id) ? { member_account: memberAccount(payload.soul_id, a.member_id).account, member_uid: memberAccount(payload.soul_id, a.member_id).uid } : {}),
             });
           }
           tx.put('hellos', payload.request_id, { caller, digest, result: decision, at: now });
@@ -264,31 +292,81 @@ export function admissionPlugin({ schemas, profileReasons = () => [] }) {
         const live = tx.list('runtimes').map(([, rt]) => rt).filter((rt) => !rt.superseded && now <= rt.lease_expires_at);
         return fn((soulId, generation) => live.some((rt) => rt.soul_id === soulId && rt.lease_generation === generation));
       });
-      // For the broker plugin (§4.9): does this binding speak for this live
-      // runtime? An unknown runtime and a wrong binding get the same answer,
-      // so a probe learns nothing about which runtimes exist. Receipted
-      // without the binding.
-      async function verifyBinding(input) {
-        const { runtime_id: runtimeId, channel_binding: binding } = input ?? {};
+      // Bind challenges, one per broker connection, in memory only: a restart
+      // or a closed connection drops them, and the member asks again.
+      const challenges = new Map(); // connection -> { runtime_id, nonce, expires }
+      const connectionOf = (meta) => (typeof meta?.connection === 'string' && meta.connection ? meta.connection : undefined);
+      // For the broker plugin: start a bind. Answers the same for a runtime
+      // that exists and one that does not, so a probe learns nothing.
+      async function bindChallenge(input, meta) {
+        const connection = connectionOf(meta);
+        if (!connection) fail('host.invalid_request', 'a bind challenge belongs to a broker connection');
+        if (!input || typeof input !== 'object' || Object.keys(input).length !== 1 || typeof input.runtime_id !== 'string' || !RUNTIME_ID.test(input.runtime_id)) {
+          fail('host.invalid_request', 'bind.challenge takes { runtime_id }');
+        }
+        const now = clock.now();
+        for (const [c, ch] of challenges) if (ch.expires <= now) challenges.delete(c);
+        challenges.delete(connection);
+        while (challenges.size >= MAX_CHALLENGES) challenges.delete(challenges.keys().next().value);
+        const nonce = random.hex(32);
+        challenges.set(connection, { runtime_id: input.runtime_id, nonce, expires: now + CHALLENGE_TTL_MS });
+        return { runtime_id: input.runtime_id, nonce, algorithm: 'hmac-sha256', context: BIND_CONTEXT, expires_at: iso(now + CHALLENGE_TTL_MS) };
+      }
+      const forgetConnection = (connection) => { challenges.delete(connection); };
+
+      // For the broker plugin (§4.9): may this connection speak for this live
+      // runtime? Two forms of proof:
+      //   { runtime_id, proof }            the keyed proof over this
+      //                                    connection's challenge (row 16a)
+      //   { runtime_id, channel_binding }  the binding itself; accepted only
+      //                                    for a runtime with no member account
+      // A runtime bound to a member account also needs the connection to come
+      // from that account's endpoint, and takes the proof form only. Every
+      // mismatch (unknown runtime, wrong key, wrong account, wrong form) gets
+      // the same answer. Receipted without the binding or the proof.
+      async function verifyBinding(input, meta) {
+        const { runtime_id: runtimeId } = input ?? {};
+        const connection = connectionOf(meta);
+        const caller = connection ? connectionAccount(connection) : undefined;
         try {
-          if (!input || typeof input !== 'object' || Object.keys(input).length !== 2
-            || typeof runtimeId !== 'string' || !RUNTIME_ID.test(runtimeId)
-            || typeof binding !== 'string' || !CHANNEL_BINDING.test(binding)) {
-            fail('host.invalid_request', 'bind takes { runtime_id, channel_binding } from the admission result');
+          const keys = input && typeof input === 'object' ? Object.keys(input) : [];
+          const byProof = keys.length === 2 && typeof input.proof === 'string' && PROOF.test(input.proof);
+          const byBinding = keys.length === 2 && typeof input.channel_binding === 'string' && CHANNEL_BINDING.test(input.channel_binding);
+          if (typeof runtimeId !== 'string' || !RUNTIME_ID.test(runtimeId) || byProof === byBinding) {
+            fail('host.invalid_request', 'bind takes { runtime_id, proof } after bind.challenge, or { runtime_id, channel_binding }');
           }
+          // A challenge is spent by the first bind that follows it, right or wrong.
+          const challenge = byProof && connection ? challenges.get(connection) : undefined;
+          if (byProof && connection) challenges.delete(connection);
+          const now = clock.now();
+          const mismatch = () => fail('caller_mismatch', `the caller does not match runtime ${runtimeId}`);
           const bound = await store.tx((tx) => {
             const rt = tx.get('runtimes', runtimeId);
-            // An unknown runtime is compared against a same-length stand-in,
-            // so it costs what a wrong binding costs.
-            const matches = sameBinding(rt?.channel_binding ?? 'x'.repeat(binding.length), binding);
-            if (!rt || !matches) fail('caller_mismatch', `the channel binding does not match runtime ${runtimeId}`);
-            current(rt, runtimeId, clock.now());
-            return Object.freeze({ runtime_id: runtimeId, soul_id: rt.soul_id, member_id: rt.member_id, role: rt.role, installation_epoch: rt.epoch, lease_generation: rt.lease_generation });
+            // An unknown runtime is compared against a stand-in of the same
+            // length, so it costs what a wrong key costs.
+            const key = rt?.channel_binding ?? 'x'.repeat(24);
+            let matches;
+            if (byProof) {
+              const live = challenge && challenge.runtime_id === runtimeId && NONCE.test(challenge.nonce) && challenge.expires > now;
+              matches = sameBinding(bindProof(key, live ? challenge.nonce : '0'.repeat(64), runtimeId), input.proof) && Boolean(live);
+            } else {
+              matches = sameBinding(rt?.channel_binding ?? 'x'.repeat(input.channel_binding.length), input.channel_binding);
+            }
+            if (!rt || !matches) mismatch();
+            if (rt.member_uid !== undefined) {
+              // An account-bound runtime: the right account, and the proof form.
+              if (!caller || caller.uid !== rt.member_uid || !byProof) mismatch();
+            } else if (caller) {
+              // A member account's endpoint speaks only for that account's runtimes.
+              mismatch();
+            }
+            current(rt, runtimeId, now);
+            return Object.freeze({ runtime_id: runtimeId, soul_id: rt.soul_id, member_id: rt.member_id, role: rt.role, installation_epoch: rt.epoch, lease_generation: rt.lease_generation, ...(rt.member_account ? { member_account: rt.member_account } : {}) });
           });
-          await receipts.append({ kind: 'hq.bind', runtime_id: runtimeId, soul_id: bound.soul_id, member_id: bound.member_id });
+          await receipts.append({ kind: 'hq.bind', runtime_id: runtimeId, soul_id: bound.soul_id, member_id: bound.member_id, proof: byProof ? 'hmac-sha256' : 'channel-binding', ...(caller ? { caller_account: caller.account } : {}) });
           return bound;
         } catch (e) {
-          if (e instanceof HostError) await receipts.append({ kind: 'hq.bind.refused', code: e.code, ...(typeof runtimeId === 'string' && RUNTIME_ID.test(runtimeId) ? { runtime_id: runtimeId } : {}) }).catch(() => {});
+          if (e instanceof HostError) await receipts.append({ kind: 'hq.bind.refused', code: e.code, ...(typeof runtimeId === 'string' && RUNTIME_ID.test(runtimeId) ? { runtime_id: runtimeId } : {}), ...(caller ? { caller_account: caller.account } : {}) }).catch(() => {});
           throw e;
         }
       }
@@ -300,7 +378,7 @@ export function admissionPlugin({ schemas, profileReasons = () => [] }) {
         if (!rt) fail('host.invalid_request', `unknown runtime ${runtimeId}`);
         return fn(Object.freeze(current(rt, runtimeId, clock.now())));
       });
-      return { provides: { withLiveRuntime, withLeases, verifyBinding, withBoundRuntime } };
+      return { provides: { withLiveRuntime, withLeases, verifyBinding, bindChallenge, forgetConnection, withBoundRuntime } };
     },
   });
 }

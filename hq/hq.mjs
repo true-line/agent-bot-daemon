@@ -18,6 +18,7 @@
 //   control.sock    hq/v1 for the owner, 0600
 //   admission.sock  hq/v1 for Soul entry points, 0600
 //   broker.sock     member broker frames, served by one plugin (§4.9), 0600
+// A member account's own endpoint is outside this directory (hq/members.mjs).
 //
 // Interim account (D4's stated risk, plan §10.3 HQ-RISK-07): until
 // agent-bot-machine provisions _agent-bot-hq (D6, its S6 slice), HQ runs in
@@ -39,10 +40,11 @@ import { backendFromConfig, createSigner, validateSignerConfig } from './signer.
 import { createEnrollment, validateEnrollmentConfig } from './enrollment.mjs';
 import { loadPlugins } from './plugins.mjs';
 import { checkSocketPath, listenSocket } from './socket.mjs';
+import { checkMemberSocket, planMemberEndpoints, validateMembersConfig } from './members.mjs';
 import { coreTable, CORE_PLUGIN, ensurePrivateDir, openStore } from './store.mjs';
 
 export const HQ_VERSION = '0.1.0';
-const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'concurrentWriters', 'legacy', 'signer', 'features', 'enrollment']);
+const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'concurrentWriters', 'legacy', 'signer', 'features', 'enrollment', 'members']);
 const FEATURE_KEYS = new Set(['hardwareSigner']);
 const LEGACY_KEYS = new Set(['supervise', 'probeIntervalMs']);
 const DEFAULT_PROBE_MS = 30_000;
@@ -94,6 +96,7 @@ export function validateConfig(c) {
     }
   }
   if (c.enrollment !== undefined) validateEnrollmentConfig(c.enrollment);
+  if (c.members !== undefined) validateMembersConfig(c.members);
   if (c.signer !== undefined) {
     validateSignerConfig(c.signer);
     if (c.signer.backend === 'helper' && c.features?.hardwareSigner !== true) {
@@ -122,6 +125,8 @@ export function createHQ({
   platform = process.platform,
   account = userInfo().username,
   uid = process.getuid?.(),
+  accounts,                      // how a member account name resolves to { uid, gid, groupMembers }
+                                 // (hq/members.mjs resolveAccount by default)
   plugins = [],                  // plugin objects (tests); installed ones come from pluginsDir
   pluginsDir,                    // installed plugins, each checked against `pins` (§4.5)
   pins = { plugins: [] },        // governance/plugins.json
@@ -142,6 +147,11 @@ export function createHQ({
   let running = false;
   let firstTick = Promise.resolve();
   let pluginLoad = [];
+  // Member accounts (§9 row 16a): the endpoints HQ opens, and which account
+  // each live broker connection arrived from. A connection on the shared
+  // broker socket has no entry.
+  let memberPlan = { endpoints: [], accountOf: () => undefined };
+  const brokerCallers = new Map();
 
   const paths = { home, control: join(home, 'control.sock'), admission: join(home, 'admission.sock'), broker: join(home, 'broker.sock') };
 
@@ -196,7 +206,10 @@ export function createHQ({
     profileInfo = detectProfile({ platform, account, standalone: cfg.standalone === true, keyStorage: signerReport()?.key_storage });
     legacyRunner ??= legacyDaemon({ supervise: cfg.legacy?.supervise === true, clock });
 
-    if (platform !== 'win32') for (const p of [paths.control, paths.admission, paths.broker]) checkSocketPath(p, platform);
+    memberPlan = cfg.members
+      ? planMemberEndpoints(cfg.members, { hqUid: uid, platform, ...(accounts ? { resolve: accounts } : {}) })
+      : { endpoints: [], accountOf: () => undefined };
+    if (platform !== 'win32') for (const p of [paths.control, paths.admission, paths.broker, ...memberPlan.endpoints.map((e) => e.path)]) checkSocketPath(p, platform);
     store = openStore(home, { uid });
     core = createCore({
       clock, random, signer,
@@ -215,7 +228,12 @@ export function createHQ({
     // Installed plugins: digests checked against the pins before any plugin
     // code runs. A refused plugin never reaches the host; status and a
     // receipt say why.
-    const admission = admissionPlugin({ schemas, profileReasons: () => profileInfo.reasons });
+    const admission = admissionPlugin({
+      schemas,
+      profileReasons: () => profileInfo.reasons,
+      memberAccount: (soul, member) => memberPlan.accountOf(soul, member),
+      callerOf: (connection) => brokerCallers.get(connection),
+    });
     const builtIn = [admission, tasksPlugin({ schemas }), ...plugins];
     pluginLoad = [];
     const accepted = [];
@@ -244,7 +262,11 @@ export function createHQ({
           version: HQ_VERSION,
           account,
           profileReasons: profileInfo.reasons,
-          sockets: { control: paths.control, admission: paths.admission, broker: paths.broker, access: 'file mode 0600 in a 0700 directory (no peer-credential check yet)' },
+          sockets: {
+            control: paths.control, admission: paths.admission, broker: paths.broker,
+            access: 'file mode 0600 in a 0700 directory (no peer-credential check yet)',
+            ...(memberPlan.endpoints.length ? { members: memberPlan.endpoints.map((e) => ({ account: e.account, path: e.path })), memberAccess: 'one endpoint per member account, mode 0660 in a 2750 directory of the member\'s private group' } : {}),
+          },
           ownerSessions: openOwnerSessions(),
           pluginLoad,
           ...(signerReport() ? { signer: signerReport() } : {}),
@@ -269,6 +291,21 @@ export function createHQ({
           endSession: (connection) => { host.brokerClosed(connection); },
         }),
       ];
+      // One endpoint per member account. The account is recorded before the
+      // connection's first frame and dropped when it closes.
+      for (const endpoint of memberPlan.endpoints) {
+        sockets.push(await listenSocket({
+          path: endpoint.path, auth: 'member', core, mode: 0o660,
+          dispatch: (kind, { payload, session }) => host.brokerAccept(kind, payload, { connection: session }),
+          newSession: () => {
+            const connection = `bc_${random.hex(12)}`;
+            brokerCallers.set(connection, Object.freeze({ account: endpoint.account, uid: endpoint.uid }));
+            return connection;
+          },
+          endSession: (connection) => { brokerCallers.delete(connection); host.brokerClosed(connection); },
+        }));
+        checkMemberSocket(endpoint);
+      }
     } catch (e) {
       for (const s of sockets) await s.close();
       sockets = [];

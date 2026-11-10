@@ -5,8 +5,10 @@
 // cannot reach owner operations by claiming to be the owner, and the owner's
 // client cannot send Hello on the control socket.
 //
-// Access control. All three sockets are Unix domain sockets created 0600 in HQ's
-// 0700 state directory, so only HQ's own OS account can connect. Node has no
+// Access control. The three sockets in HQ's state directory are Unix domain
+// sockets created 0600 in a 0700 directory, so only HQ's own OS account can
+// connect. A member account's own broker endpoint lives outside it, where the
+// file system admits that account alone (hq/members.mjs, §9 row 16a). Node has no
 // peer-credential API (getpeereid / SO_PEERCRED), so the skeleton relies on
 // the file mode. That is exact while HQ runs in the owner's account, which is
 // the interim layout (D4's stated risk; plan §10.3 HQ-RISK-07). When HQ moves
@@ -57,7 +59,9 @@ export function checkSocketPath(path, platform = process.platform) {
   if (len > max) throw new Error(`socket path ${path} is ${len} bytes; ${platform} allows ${max}. Choose a shorter --home`);
 }
 
-export async function listenSocket({ path, auth, dispatch, core, newSession, endSession }) {
+// `mode` is the socket file's mode: 0600 for HQ's own sockets, 0660 for a
+// member endpoint whose directory gives it the member's group (hq/members.mjs).
+export async function listenSocket({ path, auth, dispatch, core, newSession, endSession, mode = 0o600 }) {
   if (process.platform === 'win32') throw new Error('HQ on Windows needs a named pipe with an owner DACL, which is not built yet (#89)');
   checkSocketPath(path);
   if (existsSync(path)) {
@@ -146,7 +150,7 @@ export async function listenSocket({ path, auth, dispatch, core, newSession, end
     server.once('error', reject);
     server.listen(path, () => { server.off('error', reject); resolve(); });
   });
-  chmodSync(path, 0o600);
+  chmodSync(path, mode);
 
   return {
     path,

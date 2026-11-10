@@ -18,10 +18,15 @@ export function referenceBroker({ name = 'test-broker', beforeBind } = {}) {
       const bound = new Map(); // connection → runtime ID
       ctx.broker.serve({
         async accept(kind, message, { connection }) {
+          // Row 16a: a bind starts with HQ's challenge; the proof answers it.
+          if (kind === 'bind.challenge') {
+            if (bound.has(connection)) fail('host.invalid_request', 'this connection is already bound');
+            return admission.bindChallenge(message, { connection });
+          }
           if (kind === 'bind') {
             if (bound.has(connection)) fail('host.invalid_request', 'this connection is already bound');
             if (beforeBind) await beforeBind();
-            const b = await admission.verifyBinding(message);
+            const b = await admission.verifyBinding(message, { connection });
             bound.set(connection, b.runtime_id);
             return { runtime_id: b.runtime_id, member_id: b.member_id, role: b.role };
           }
@@ -29,7 +34,7 @@ export function referenceBroker({ name = 'test-broker', beforeBind } = {}) {
           if (!runtimeId) fail('caller_mismatch', 'a member binds its connection before anything else');
           return ctx.broker.deliver(kind, message, { runtime_id: runtimeId });
         },
-        closed(connection) { bound.delete(connection); },
+        closed(connection) { bound.delete(connection); admission.forgetConnection(connection); },
       });
       return { provides: { boundConnections: () => bound.size } };
     },
