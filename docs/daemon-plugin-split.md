@@ -953,7 +953,7 @@ repository that does the work; this repository tracks only its own rows.
 | 15c | agent-bot-daemon, agent-bot-identity | WP2 | **Enrollment on the signer's key** (`hq/enrollment.mjs`, opt-in with `enrollment.source: hq`; `legacy` stays the default until the identity-service link can use the enrolled device; a real enrollment on a software key succeeded on 2026-11-10): device enrollment, re-enrollment (`enroll --force`, a fresh key generation) and the jwt-bearer assertion move into HQ and are signed by the signer | The identity service's device record names the signer's key, with the `key_storage` the signer reports (`software` unless `hardwareSigner` is on); device status no longer comes from the legacy bridge |
 | 15d | agent-bot-identity, agent-comms | WP2 | **Soul tokens without a key file:** HQ asks the identity service for `v2` soul tokens (the agent-bot-comms broker already verifies them) and `vouch-key.pem` is removed, with the keyd grants it signs today | No `vouch-key.pem` on the host; soul token `v1` off. With `hardwareSigner` on there is no signing key file at all; T02 |
 | 16 | agent-bot-daemon | WP2 | **Linux protected profile:** per-member service identities, namespaces, broker socket and workspace views as the only exits, caller-bound grant handles. Proposed in the four slices below. | T01–T03, T21 |
-| 16a | agent-bot-daemon | WP2 | **Caller identity from the kernel:** HQ learns which OS account is on a member connection from the host, never from a field the member sends. A runtime belongs to the member account it was admitted for; a binding or grant handle presented from any other account is `caller_mismatch` before the operation, and still after an HQ restart | T01 on two real accounts: member B presents member A's binding and handle and is refused |
+| 16a | agent-bot-daemon | WP2 | **Caller identity from the kernel:** HQ learns which OS account is on a member connection from the host, never from a field the member sends. A runtime belongs to the member account it was admitted for; a binding or grant handle presented from any other account is `caller_mismatch` before the operation, and still after an HQ restart. As a second layer, `bind` becomes a signed challenge: the runtime proves it holds its key and the binding is never sent | T01 on two real accounts: member B presents member A's binding and handle and is refused; a caller on the right endpoint without the runtime's key is refused too |
 | 16b | agent-bot-daemon | WP2 | **Member accounts and HQ-controlled launch:** HQ starts every member runtime under that member's own account through a launcher HQ cannot widen; member state lives in the member's home at 0700; HQ's state directory admits only the HQ account | A member reads neither another member's state nor any file in HQ's state directory, and cannot run HQ's signer or credential tooling (T02) |
 | 16c | agent-bot-daemon | WP2 | **Exits:** a member account has no network route of its own. The member broker socket and its workspace view are the only ways out | A member's direct connection to a provider or service is blocked by the host, while the same request through the broker socket is delivered (T03) |
 | 16d | agent-bot-daemon | WP2 | **Qualification and the label:** the hostile-member suite (T01–T03, T21) as one suite that row 29 reuses on macOS; a qualification record for the host; `managed-protected` reported only when the record, member accounts, the HQ account and a hardware key all hold | The suite passes on the Linux reference host under `managed-protected`; run under `managed-cooperative`, every receipt names cooperative and each protected claim is `profile_insufficient` (T21) |
@@ -1011,12 +1011,29 @@ reports what the other three enforce.
 - **macOS is unaffected.** Every slice is refused or inert off Linux, and
   macOS keeps reporting `managed-cooperative` until row 29.
 
-Open questions for the owner, each with a recommendation; none blocks 16a's
-design review, and each is settled in the slice that needs it:
+**Decided by the owner on 2026-11-10 (16a).** The account check is the gate,
+and a signature is added to it, not used instead of it. A signature proves a
+caller holds a key, not who the caller is: while members share an account,
+one member can read another's key as easily as its binding. So:
+
+- HQ opens one broker endpoint per member account, in a directory only that
+  account can enter. The file system identifies the caller, with no native
+  code. Reading the peer's credentials through a native helper stays the
+  fallback if per-member endpoints prove unworkable.
+- On each connection HQ sends a challenge and the runtime signs it with a key
+  made for that runtime at admission. This is once per connection, not per
+  request, because the connection then speaks for one runtime. It keeps the
+  binding off the wire, still refuses a caller if an endpoint's permissions
+  are ever wrong, and lets a receipt name the key that authorized the
+  connection.
+- Neither layer restrains a member acting as itself. What a member may do is
+  limited by its grants, not by how it proves who it is.
+
+Open questions for the owner, each with a recommendation, settled in the
+slice that needs it:
 
 | Question | Recommendation |
 | --- | --- |
-| How does HQ learn the caller's account, given that Node has no peer-credential call? | One broker endpoint per member account, in a directory only that account can enter, so the file system identifies the caller. No native code. The alternative is a small native helper that reads the socket's peer credentials, reviewed under D5 |
 | What lets HQ start a process as a member account without being root? | A launcher installed by agent-bot-machine that accepts only the HQ account and only member accounts as targets. It is the provisioner's to install, so its contract is agreed with that repository first |
 | How is egress blocked? | A per-account firewall rule set by the provisioner, checked by HQ at admission. A network namespace per member is stronger and can replace it later without changing the test |
 
