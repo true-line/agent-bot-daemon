@@ -964,6 +964,31 @@ host) are met only with the flag on, and `managed-protected` still requires
 a hardware key (§3.3). The flag's default changes when row 15b's helpers are
 qualified on real hardware; that is an owner decision.
 
+**Row 15d, first step, on a real host (2026-11-10 UTC).** The existing
+identity daemon on the owner's Mac was switched to version 2 soul tokens:
+`legacyLocalCustody` removed, `soulTokens: "v2"` set, and the daemon paired
+again with the agent-bot-comms broker (0.5.5). The daemon then issued an
+ES256 `soul+jwt` signed by the identity service, and the broker reported the
+soul and its peers as `verified`. No soul token on that host is signed by
+`vouch-key.pem` any more.
+
+The file is still there, because it has four uses and this step moved one:
+
+| Use of `vouch-key.pem` | State |
+| --- | --- |
+| Signing version 1 soul tokens | Moved: version 2 tokens come from the identity service |
+| The daemon's pairing with the comms broker | Moved for token checks; the broker's account watch still expects the key (see below) |
+| Signing keyd grants | Unchanged; moves with rows 17 and 18 |
+| The daemon identity in owner-decision evidence | Unchanged; needs a decision in agent-bot-comms |
+
+Two findings from the run, both in
+[agent-bot-comms issue 309](https://github.com/true-line/agent-bot-comms/issues/309):
+with a version 2 pairing the broker's account watch fails with `internal`,
+because it and the owner-decision evidence are keyed by the daemon's Ed25519
+host key; and a broker that cannot refresh the service's signing keys rejects
+every version 2 token without logging why. Row 15d is not done until the
+first is resolved and the keyd grants no longer need the file.
+
 ### Stage 2b: brokered adapters (WP2, WP4)
 
 | # | Repo | WP | PR | Done when |
