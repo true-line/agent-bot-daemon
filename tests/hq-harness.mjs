@@ -46,14 +46,15 @@ export function fakeLegacy({ device = 'enrolled', daemon = 'running' } = {}) {
   return { state, run };
 }
 
-export async function startHQ({ device = 'enrolled', daemon = 'running', supervise = false, config, home = tempHome(), plugins, pluginsDir, pins, devPlugins, account = 'user', platform = 'darwin' } = {}) {
+export async function startHQ({ device = 'enrolled', daemon = 'running', supervise = false, config, home = tempHome(), plugins, pluginsDir, pins, devPlugins, account = 'user', platform = 'darwin', signer } = {}) {
   const legacy = fakeLegacy({ device, daemon });
   const clock = testClock(Date.UTC(2026, 10, 8));
   const hq = createHQ({
     home,
     schemas,
     config: config ?? { acceptedDefinitions: { [SOUL]: [DIGEST] } },
-    signer: legacySigner({ run: legacy.run }),
+    enrollment: legacySigner({ run: legacy.run }),
+    ...(signer ? { signer } : {}),
     legacy: legacyDaemon({ run: legacy.run, supervise, clock }),
     clock,
     account,

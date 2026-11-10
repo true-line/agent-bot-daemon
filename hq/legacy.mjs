@@ -2,11 +2,12 @@
 // per-account daemon (agent-bot-identity's `agent-bot daemon`) and leaves it
 // unchanged. Two things cross the bridge, both through the existing CLI:
 //
-// - Device status. Until the HQ signer lands (§9 PR 15), the device HQ
-//   reports is the one the existing agent-bot enrolled. `legacySigner` reads
-//   it from `agent-bot server status --json` and maps it onto HQ core's three
-//   device states. Anything it cannot read is an unavailable signer, which is
-//   safe mode (§4.4). It signs nothing: approvals need the HQ signer.
+// - Device status. Until enrollment moves into HQ (§9 row 15c), the device
+//   HQ reports is the one the existing agent-bot enrolled. `legacySigner`
+//   reads it from `agent-bot server status --json` and maps it onto HQ
+//   core's three device states. Anything it cannot read is an unavailable
+//   signer, which is safe mode (§4.4). It signs nothing: the HQ signer
+//   (hq/signer.mjs) signs, and takes device status and enrollment from here.
 // - Supervision. `legacyDaemon` probes `agent-bot daemon status --json` and
 //   reports running, stopped or unknown. It starts a stopped daemon only when
 //   the owner turns `supervise` on in HQ's config; it never stops one.
@@ -55,11 +56,11 @@ export function legacySigner({ command = ['agent-bot', 'server', 'status', '--js
       if (!state) throw new Error(`${command.join(' ')} gave no device state (exit ${r.code}${r.error ? `, ${r.error}` : ''})`);
       return state;
     },
-    // Enrollment stays in the existing CLI until §9 PR 15 moves it into HQ.
+    // Enrollment stays in the existing CLI until §9 row 15c moves it into HQ.
     enroll() {
-      fail('host.invalid_request', 'enroll with `agent-bot server enroll` for now; HQ enrollment arrives with the HQ signer (§9 PR 15)');
+      fail('host.invalid_request', 'enroll with `agent-bot server enroll` for now; HQ enrollment arrives in §9 row 15c');
     },
-    sign() { throw new Error('the HQ signer arrives in §9 PR 15; the skeleton signs nothing'); },
+    sign() { throw new Error('the legacy enrollment signs nothing; hq/signer.mjs is the HQ signer'); },
     verify() { return false; },
   };
   return signer;
