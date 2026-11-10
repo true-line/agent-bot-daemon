@@ -53,9 +53,17 @@ test('CI has a software TPM to test against', { skip: !required }, () => {
   assert.equal(available, true, 'HQ_REQUIRE_TPM=1 but swtpm or tpm2-tools is missing (or this is not Linux)');
 });
 
+// When a helper call fails, say what tpm2-tools said: HQ itself ignores stderr.
+function explain(handle, op, input = '{}') {
+  const r = spawnSync(process.execPath, [HELPER, '--handle', handle, op], { input, env, encoding: 'utf8' });
+  return `${op} exit ${r.status}: ${r.stderr.trim() || r.stdout.trim()}`;
+}
+
 test('TPM helper: creates a key in the TPM, signs with it, and HQ holds no key file', { skip }, async () => {
   const home = tempHome();
   try {
+    const probe = spawnSync(process.execPath, [HELPER, '--handle', '0x8101002f', 'create'], { input: '{}', env, encoding: 'utf8' });
+    assert.equal(probe.status, 0, explain('0x8101002e', 'create'));
     const signer = createSigner({ home, backend: backend(), enrollment });
     assert.equal(await signer.deviceStatus(), 'enrolled');
     const report = signer.report();
