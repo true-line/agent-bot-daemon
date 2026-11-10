@@ -66,7 +66,7 @@ async function ask(home, op) {
 
 function signerLine(g) {
   if (!g.available) return `signer: unavailable (${g.reason})`;
-  const custody = g.key_storage === 'hardware' ? 'hardware key' : 'software key file (transition custody)';
+  const custody = g.key_storage === 'hardware' ? 'hardware key (experimental feature hardwareSigner)' : 'software key file (transition custody)';
   return `signer: ${custody}, ${g.backend} backend, key ${g.thumbprint.slice(0, 12)}, generation ${g.generation}`;
 }
 

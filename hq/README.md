@@ -41,9 +41,21 @@ others can write it, and refuses unknown keys:
   "concurrentWriters": ["workspace:shared"],
   "standalone": false,
   "legacy": { "supervise": false, "probeIntervalMs": 30000 },
+  "features": { "hardwareSigner": true },
   "signer": { "backend": "helper", "command": ["/usr/local/libexec/hq-signer"] }
 }
 ```
+
+`features` holds feature flags, all off by default. `hardwareSigner` gates
+the `helper` signer backend: with it off, HQ refuses a config that names a
+helper, and everything else runs on the `software` backend. The hardware
+path is experimental until its helpers are qualified on real hardware (§9
+row 15b), and no other work waits on it. `status` reports the flag.
+
+[`helpers/tpm2-signer.mjs`](../helpers/tpm2-signer.mjs) is the TPM 2.0
+helper for Linux. It needs `tpm2-tools` and access to the TPM device, keeps
+the key at a persistent handle inside the TPM, and is tested in CI against a
+software TPM only. Its header states its limits.
 
 `signer` is optional. Without it the backend is `software`. A `helper` is
 named by absolute path and speaks `agent-bot-hq-signer/1`, described at the
@@ -76,8 +88,8 @@ peer-credential check and a service unit, is #88.
 
 - Signed plugin packages and plugin upgrade. The pins file is the only
   trust anchor, and changing it is a reviewed change to this repository.
-- The rest of the signer row (§9 rows 15b to 15d): the hardware helpers
-  themselves (TPM, Secure Enclave), enrollment and re-enrollment with the
+- The rest of the signer row (§9 rows 15b to 15d): the Secure Enclave
+  helper and qualification of the TPM helper on real hardware, enrollment and re-enrollment with the
   identity service on the signer's key, and soul tokens without
   `vouch-key.pem`. Until then device status still comes from the legacy
   enrollment, whose device key is not the signer's.

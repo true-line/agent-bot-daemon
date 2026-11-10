@@ -158,7 +158,16 @@ test('a helper that misbehaves is refused: wrong protocol, a software claim, a p
 test('signer config: software by default, a helper by absolute path, nothing else', () => {
   assert.equal(backendFromConfig(undefined, { home: '/h' }).kind, 'software');
   assert.equal(backendFromConfig({ backend: 'helper', command: ['/usr/local/bin/hq-signer'] }, { home: '/h' }).kind, 'helper');
-  assert.doesNotThrow(() => validateConfig({ signer: { backend: 'helper', command: ['/usr/local/bin/hq-signer', '--slot', '1'] } }));
+  const on = { features: { hardwareSigner: true } };
+  assert.doesNotThrow(() => validateConfig({ ...on, signer: { backend: 'helper', command: ['/usr/local/bin/hq-signer', '--slot', '1'] } }));
+  // The helper backend is off unless the owner turns the feature on.
+  for (const features of [undefined, {}, { hardwareSigner: false }]) {
+    assert.throws(() => validateConfig({ ...(features ? { features } : {}), signer: { backend: 'helper', command: ['/usr/local/bin/hq-signer'] } }), /behind a feature flag; set features\.hardwareSigner/);
+  }
+  assert.doesNotThrow(() => validateConfig({ features: { hardwareSigner: true } }), 'the flag alone changes nothing: the backend stays software');
+  assert.throws(() => validateConfig({ features: { hardwareSigner: 'yes' } }), /is a boolean/);
+  assert.throws(() => validateConfig({ features: { tpm: true } }), /unknown key features\.tpm/);
+  assert.throws(() => validateConfig({ features: [] }), /features is an object/);
   assert.doesNotThrow(() => validateConfig({ signer: { backend: 'software' } }));
   assert.throws(() => validateConfig({ signer: { backend: 'helper' } }), /signer\.command/);
   assert.throws(() => validateConfig({ signer: { backend: 'helper', command: ['hq-signer'] } }), /absolute path/);
@@ -174,6 +183,7 @@ test('HQ: status names the signer and its custody, a software key is a stated re
     const s = (await owner.request('status')).result;
     assert.equal(s.mode, 'running');
     assert.deepEqual([s.hq.signer.available, s.hq.signer.backend, s.hq.signer.key_storage, s.hq.signer.generation], [true, 'software', 'software', 1]);
+    assert.deepEqual(s.hq.features, { hardwareSigner: false });
     assert.match(s.hq.profileReasons.join('\n'), /key_storage=software/);
     assert.equal(JSON.stringify(s).includes('PRIVATE KEY'), false);
 
@@ -187,10 +197,11 @@ test('HQ: status names the signer and its custody, a software key is a stated re
 
 test('HQ on a helper: hardware custody in status, no key file in the state directory, and the software reason is gone', async () => {
   const chip = outside();
-  const t = await startHQ({ config: { signer: { backend: 'helper', command: helperCommand(chip) } } });
+  const t = await startHQ({ config: { features: { hardwareSigner: true }, signer: { backend: 'helper', command: helperCommand(chip) } } });
   try {
     const s = (await (await t.owner()).request('status')).result;
     assert.deepEqual([s.hq.signer.backend, s.hq.signer.key_storage, s.hq.signer.key_files], ['helper', 'hardware', 0]);
+    assert.deepEqual(s.hq.features, { hardwareSigner: true });
     assert.doesNotMatch(s.hq.profileReasons.join('\n'), /key_storage|hardware key/);
     assert.equal(s.profile, 'managed-cooperative', 'the other conditions still hold the host at cooperative');
     assert.deepEqual(walk(t.home).filter((f) => /\.pem$/.test(f)), []);
@@ -227,7 +238,7 @@ test('signer rekey: moves custody to the helper, removes the key file, and is re
     assert.equal(existsSync(join(home, 'signer/device-key.pem')), true);
 
     // The owner points HQ at the helper. Without a rekey the pin still names the old custody.
-    writeFileSync(join(home, 'config.json'), JSON.stringify({ signer: { backend: 'helper', command: helperCommand(chip) } }), { mode: 0o600 });
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ features: { hardwareSigner: true }, signer: { backend: 'helper', command: helperCommand(chip) } }), { mode: 0o600 });
     const stale = createSigner({ home, backend: backendFromConfig({ backend: 'helper', command: helperCommand(chip) }, { home }), enrollment });
     assert.match(stale.report().reason, /changing custody is a re-enrollment/);
 
@@ -236,5 +247,11 @@ test('signer rekey: moves custody to the helper, removes the key file, and is re
     assert.notEqual(out.thumbprint, before.thumbprint);
     assert.equal(existsSync(join(home, 'signer/device-key.pem')), false);
     assert.equal(cli('signer', 'nope').status, 1);
+
+    // With the feature turned off again, HQ refuses the config instead of using the helper.
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ signer: { backend: 'helper', command: helperCommand(chip) } }), { mode: 0o600 });
+    const off = cli('signer', 'rekey');
+    assert.notEqual(off.status, 0);
+    assert.match(off.stderr, /behind a feature flag/);
   } finally { rmSync(home, { recursive: true, force: true }); rmSync(dirname(chip), { recursive: true, force: true }); }
 });
