@@ -103,9 +103,12 @@ peer-credential check and a service unit, is #88.
   makes HQ tell member accounts apart; it does not create the accounts,
   start members under them, close HQ's own state to them, or block their
   network. HQ still reports `managed-cooperative`, with members sharing one
-  account as a stated reason, until 16b. The agent-comms broker plugin and
-  the Soul entry point still send the binding itself, so they work only for
-  members without an account until they adopt the challenge.
+  account as a stated reason, until 16b. The agent-comms broker plugin
+  ([agent-bot-comms#312](https://github.com/true-line/agent-bot-comms/pull/312))
+  and the Soul member
+  ([agent-bot-souls#3](https://github.com/true-line/agent-bot-souls/pull/3))
+  bind by the challenge. Nothing creates the endpoint directories yet; that
+  is agent-bot-machine's.
 - Signed plugin packages and plugin upgrade. The pins file is the only
   trust anchor, and changing it is a reviewed change to this repository.
 - The rest of the signer row (§9 rows 15b to 15d): the Secure Enclave
