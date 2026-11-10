@@ -1051,6 +1051,9 @@ other privilege.
   account. It can do nothing a member could not already do.
 - The first form is a sudoers rule. A systemd unit per member can replace it
   without changing what HQ asks for.
+- Before the provisioner runs any command as root, the owner sees the
+  request and accepts it in the local web UI or on the website. Nothing
+  privileged runs on an agent's word alone.
 - agent-bot-machine also creates the member accounts and the endpoint
   directories of 16a. Its contract is
   [agent-bot-machine#470](https://github.com/true-line/agent-bot-machine/issues/470).
