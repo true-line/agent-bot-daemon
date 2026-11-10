@@ -74,15 +74,19 @@ function create(handle, replace) {
   }
   // Talking to a TPM directly (no resource manager, as with a software TPM
   // over a socket), each tool leaves its transient objects loaded and the
-  // chip has room for about three. Flush them before and after. Behind the
+  // chip has room for about three. Flush them before, between and after. Behind the
   // kernel resource manager (/dev/tpmrm0) this flushes nothing of anyone else's.
   const flush = () => { try { tpm('tpm2_flushcontext', ['-t']); } catch { /* nothing to flush */ } };
   flush();
   withScratch((dir) => {
     const f = (n) => join(dir, n);
+    // Each step saves its object to a context file, so the loaded copy can go.
     tpm('tpm2_createprimary', ['-C', 'o', '-G', 'ecc256', '-c', f('primary.ctx')]);
+    flush();
     tpm('tpm2_create', ['-C', f('primary.ctx'), '-G', 'ecc256:ecdsa-sha256', '-a', KEY_ATTRIBUTES, '-u', f('key.pub'), '-r', f('key.priv')]);
+    flush();
     tpm('tpm2_load', ['-C', f('primary.ctx'), '-u', f('key.pub'), '-r', f('key.priv'), '-c', f('key.ctx')]);
+    flush();
     try { tpm('tpm2_evictcontrol', ['-C', 'o', '-c', f('key.ctx'), handle]); } finally { flush(); }
   });
   return publicJwkOf(handle);
