@@ -5,6 +5,9 @@
 //                                                 run HQ in the foreground
 //   node hq/main.mjs status [--home DIR] [--json] ask a running HQ for status
 //   node hq/main.mjs souls  [--home DIR] [--json] list admitted Souls
+//   node hq/main.mjs enroll --harness NAME [--harness NAME]... [--force] [--name DEVICE] [--home DIR]
+//                                                 enroll this HQ with the identity service
+//                                                 (needs enrollment.source "hq" in config)
 //   node hq/main.mjs signer rekey [--home DIR]    replace the HQ signer's key
 //                                                 (HQ must be stopped)
 //
@@ -36,7 +39,7 @@ import { backendFromConfig, createSigner, removeSoftwareKey } from './signer.mjs
 import { readPins } from './plugins.mjs';
 import { connectSocket } from './socket.mjs';
 
-const USAGE = 'usage: node hq/main.mjs <run|status|souls|signer rekey> [--home DIR] [--plugins DIR] [--dev-plugins DIR] [--json]';
+const USAGE = 'usage: node hq/main.mjs <run|status|souls|enroll|signer rekey> [--home DIR] [--plugins DIR] [--dev-plugins DIR] [--json]';
 const PINS = join(dirname(fileURLToPath(import.meta.url)), '../governance/plugins.json');
 
 function parse(argv) {
@@ -45,6 +48,9 @@ function parse(argv) {
   for (let i = args.cmd === 'signer' ? 2 : 1; i < argv.length; i++) {
     if (argv[i] === '--home') args.home = argv[++i];
     else if (argv[i] === '--json') args.json = true;
+    else if (argv[i] === '--harness') (args.harnesses ??= []).push(argv[++i]);
+    else if (argv[i] === '--force') args.force = true;
+    else if (argv[i] === '--name') args.name = argv[++i];
     else if (argv[i] === '--plugins') args.plugins = argv[++i];
     else if (argv[i] === '--dev-plugins') args.devPlugins = argv[++i];
     else throw new Error(`unknown argument ${argv[i]}\n${USAGE}`);
@@ -117,6 +123,22 @@ async function main(argv) {
     }
     console.log(`listening: ${hq.paths.control} (owner), ${hq.paths.admission} (entry points), ${hq.paths.broker} (members)`);
     return;
+  }
+  if (args.cmd === 'enroll') {
+    const client = await connectSocket(join(args.home, 'control.sock'));
+    try {
+      const res = await client.request('device.enroll', { harnesses: args.harnesses ?? [], ...(args.force ? { force: true } : {}), ...(args.name ? { device_name: args.name } : {}) });
+      if (!res.ok) { console.error(JSON.stringify(res.refusal ?? res.host_refusal ?? res)); process.exitCode = 1; return; }
+      const g = res.result;
+      if (!g.pending) { console.log(JSON.stringify(g, null, 2)); return; }
+      console.log(`Approve this device at the identity service.\n  code: ${g.user_code}\n  open: ${g.verification_uri_complete ?? g.verification_uri ?? '(the identity service\'s device page)'}\n  key:  ${g.key_storage} key ${g.key_thumbprint.slice(0, 12)}, generation ${g.key_generation}\nWaiting for approval (until ${g.expires_at})...`);
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const s = (await client.request('device.status')).result?.enrollment?.grant;
+        if (s?.state === 'approved') { console.log(`Enrolled as device ${s.device_id}. Restart HQ to leave safe mode.`); return; }
+        if (s?.state === 'failed') { console.error(`Enrollment failed: ${s.reason}`); process.exitCode = 1; return; }
+      }
+    } finally { await client.close(); }
   }
   if (args.cmd === 'signer') {
     if (args.sub !== 'rekey') throw new Error(USAGE);

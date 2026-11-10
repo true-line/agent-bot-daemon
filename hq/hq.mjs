@@ -36,12 +36,13 @@ import { tasksPlugin } from './tasks.mjs';
 import { legacyDaemon, legacySigner } from './legacy.mjs';
 import { detectProfile } from './profile.mjs';
 import { backendFromConfig, createSigner, validateSignerConfig } from './signer.mjs';
+import { createEnrollment, validateEnrollmentConfig } from './enrollment.mjs';
 import { loadPlugins } from './plugins.mjs';
 import { checkSocketPath, listenSocket } from './socket.mjs';
 import { coreTable, CORE_PLUGIN, ensurePrivateDir, openStore } from './store.mjs';
 
 export const HQ_VERSION = '0.1.0';
-const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'concurrentWriters', 'legacy', 'signer', 'features']);
+const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'concurrentWriters', 'legacy', 'signer', 'features', 'enrollment']);
 const FEATURE_KEYS = new Set(['hardwareSigner']);
 const LEGACY_KEYS = new Set(['supervise', 'probeIntervalMs']);
 const DEFAULT_PROBE_MS = 30_000;
@@ -92,6 +93,7 @@ export function validateConfig(c) {
       if (typeof v !== 'boolean') throw new Error(`HQ config: features.${k} is a boolean`);
     }
   }
+  if (c.enrollment !== undefined) validateEnrollmentConfig(c.enrollment);
   if (c.signer !== undefined) {
     validateSignerConfig(c.signer);
     if (c.signer.backend === 'helper' && c.features?.hardwareSigner !== true) {
@@ -112,7 +114,8 @@ export function createHQ({
   schemas,                       // pinned schemas by name: hq/v1 (admission.mjs SCHEMA_NAMES), task/v1 and wire/v1 (tasks.mjs TASK_SCHEMA_NAMES, TASK_WIRE_SCHEMA_NAMES)
   config,                        // defaults to <home>/config.json
   signer,                        // defaults to the HQ signer on the config's key backend (hq/signer.mjs)
-  enrollment = legacySigner(),   // where device status and enrollment come from until they move into HQ
+  enrollment,                    // where device status and enrollment come from: the config's source by
+                                 // default (legacy bridge, or hq/enrollment.mjs); may be a function of the signer
   legacy,                        // defaults to legacyDaemon with the config's supervise flag
   clock = { now: () => Date.now() },
   random = cryptoRandom(),
@@ -163,7 +166,7 @@ export function createHQ({
     try { await legacyRunner.tick(); } catch (e) { core.logs.push({ level: 'warn', plugin: 'hq', at: clock.now(), message: `legacy probe failed: ${e.message}` }); }
     if (host.mode === 'running') {
       try {
-        if ((await signer.deviceStatus()) === 'revoked') revokeDevice(core, 'the legacy enrollment reports the device revoked');
+        if ((await signer.deviceStatus()) === 'revoked') revokeDevice(core, 'the enrollment reports the device revoked');
       } catch { /* an unreadable signer at runtime changes nothing; status shows the last probe */ }
     }
   }
@@ -183,6 +186,11 @@ export function createHQ({
     if (running) throw new Error('HQ is already running');
     ensurePrivateDir(home, { uid });
     const cfg = validateConfig(config ?? readConfig(home, { uid }));
+    // Enrollment events become receipts (an enrollment only starts once HQ is up).
+    const onEnrollmentEvent = (e) => { if (core) pushReceipt(core, { plugin: 'hq', ...e }).catch(() => {}); };
+    enrollment ??= cfg.enrollment?.source === 'hq'
+      ? (s) => createEnrollment({ home, signer: s, ...(cfg.enrollment.server ? { server: cfg.enrollment.server } : {}), uid, clock, onEvent: onEnrollmentEvent })
+      : legacySigner();
     signer ??= createSigner({ home, backend: backendFromConfig(cfg.signer, { home, uid }), enrollment, uid, clock });
     const signerReport = () => (typeof signer.report === 'function' ? signer.report() : undefined);
     profileInfo = detectProfile({ platform, account, standalone: cfg.standalone === true, keyStorage: signerReport()?.key_storage });
@@ -241,6 +249,7 @@ export function createHQ({
           pluginLoad,
           ...(signerReport() ? { signer: signerReport() } : {}),
           features: { hardwareSigner: cfg.features?.hardwareSigner === true },
+          ...(signer.enrollmentProgress?.() ? { enrollment: signer.enrollmentProgress() } : {}),
           ...(devPlugins ? { devPlugins } : {}),
         },
         legacy: legacyRunner.report(),

@@ -209,7 +209,9 @@ export function validateSignerConfig(s) {
 
 // createSigner({ home, backend, enrollment }) → the signer HQ core uses.
 //
-// `enrollment` answers deviceStatus() and enroll() (today the legacy bridge).
+// `enrollment` answers deviceStatus() and enroll(): the legacy bridge, or
+// HQ's own enrollment (hq/enrollment.mjs). It may be given as a function of
+// the signer, since HQ's enrollment signs with it.
 // The key is created on first use, so a fresh HQ has a signer before it has
 // an enrollment of its own.
 export function createSigner({ home, backend, enrollment, uid = process.getuid?.(), clock = { now: () => Date.now() } } = {}) {
@@ -272,7 +274,7 @@ export function createSigner({ home, backend, enrollment, uid = process.getuid?.
   }
 
   const signer = {
-    source: `HQ signer (${backend.describe()}); device status from ${enrollment?.source ?? 'no enrollment source'}`,
+    get source() { return `HQ signer (${backend.describe()}); device status from ${enrollment?.source ?? 'no enrollment source'}`; },
 
     // Device state is the enrollment's. A signer that cannot present its
     // pinned key throws first, so HQ starts in safe mode (§4.4).
@@ -304,9 +306,10 @@ export function createSigner({ home, backend, enrollment, uid = process.getuid?.
       } catch { return false; }
     },
     // A compact ES256 JWS, for the identity-service assertion (§4.7).
-    signJws(header, payload) {
+    // `kid` (the key thumbprint) is in the header unless the caller turns it off.
+    signJws(header, payload, { kid = true } = {}) {
       ready();
-      const protectedHeader = { ...header, alg: 'ES256', kid: pin.thumbprint };
+      const protectedHeader = { ...header, alg: 'ES256', ...(kid ? { kid: pin.thumbprint } : {}) };
       const input = `${b64url(JSON.stringify(protectedHeader))}.${b64url(JSON.stringify(payload))}`;
       return `${input}.${b64url(signRaw(Buffer.from(input, 'ascii')))}`;
     },
@@ -331,8 +334,12 @@ export function createSigner({ home, backend, enrollment, uid = process.getuid?.
       }
     },
     publicJwk: () => ({ ...ready().jwk }),
+    // The enrollment's own progress, where it reports one (hq/enrollment.mjs).
+    enrollmentProgress: () => (typeof enrollment?.progress === 'function' ? enrollment.progress() : undefined),
+    get enrollment() { return enrollment; },
     get keyStorage() { return backend.keyStorage; },
   };
+  if (typeof enrollment === 'function') enrollment = enrollment(signer);
   return signer;
 }
 

@@ -27,6 +27,7 @@ node hq/main.mjs souls    # admitted Souls and their runtimes
 | Bootstrap per §4.4 through the SDK host. Device status comes from the legacy enrollment, so an unenrolled device or an unreadable signer is safe mode, and a revoked device is `device_revoked`. With no identity-service link yet, credentials refuse with `credential_unavailable`. | `hq.mjs`, `legacy.mjs` | §4.4, §4.7 |
 | Installed plugins: one directory per plugin, with `plugin.json` (static fields) and `plugin.mjs`. Before any plugin code runs, the tree's sha256-manifest-v1 digest must match its pin in [`governance/plugins.json`](../governance/plugins.json), and the set must resolve from `plugin.json` alone. The code's `definePlugin` fields must then equal `plugin.json`. Symlinks are refused. A refused plugin gets a `hq.plugin.refused` receipt and a reason in status, and its dependents are refused with it. `--dev-plugins` skips the pin and status always names it. Core names (`hq`, `hq-admission`, `hq-tasks`) cannot be taken. | `plugins.mjs` | §4.1, §4.5 |
 | The HQ signer ([§9 row 15a](../docs/daemon-plugin-split.md#stage-2a-member-isolation-wp2)): one pinned P-256 key, used only through `sign`. Approval records carry its ES256 signature. The `software` backend keeps a key file in `signer/` (transition custody, `key_storage=software`); the `helper` backend runs an external helper that holds a hardware key and HQ keeps no key file (`key_storage=hardware`). HQ pins the public key's thumbprint, verifies every signature against it, and treats a missing or changed key as an unavailable signer, which is safe mode. `status` names the backend and custody, and a software key is a stated reason the profile is not `managed-protected`. `signer rekey` replaces the key while HQ is stopped. | `signer.mjs` | §3.2, §4.4 |
+| HQ's own enrollment ([§9 row 15c](../docs/daemon-plugin-split.md#stage-2a-member-isolation-wp2)), when `enrollment.source` is `hq`: the identity service's device-code grant with the proof signed by the signer's key, so the device record names that key and its `key_storage`. `device.enroll` returns the code to approve and HQ polls in the background; `device.status` and `status` show pending, approved or failed, and the outcome is a receipt. Re-enrollment makes a fresh key first, and a revoked record is never reused. It also builds the jwt-bearer assertion the identity-service link will send. | `enrollment.mjs` | §4.4, §4.7 |
 | The existing daemon is probed and reported. It is started only when `legacy.supervise` is on, and never stopped. | `legacy.mjs` | §8.2 |
 
 ## State directory
@@ -41,10 +42,18 @@ others can write it, and refuses unknown keys:
   "concurrentWriters": ["workspace:shared"],
   "standalone": false,
   "legacy": { "supervise": false, "probeIntervalMs": 30000 },
+  "enrollment": { "source": "hq", "server": "https://agents.true-line.ai" },
   "features": { "hardwareSigner": true },
   "signer": { "backend": "helper", "command": ["/usr/local/libexec/hq-signer"] }
 }
 ```
+
+`enrollment.source` says where device status and enrollment come from.
+`legacy` (the default) is the existing agent-bot's enrollment, read through
+its CLI. `hq` is HQ's own enrollment with the identity service at
+`enrollment.server`, on the signer's key: `node hq/main.mjs enroll --harness
+NAME` starts the device-code grant, prints the code to approve, and waits.
+HQ is enrolled from its next start. `--force` re-enrolls with a fresh key.
 
 `features` holds feature flags, all off by default. `hardwareSigner` gates
 the `helper` signer backend: with it off, HQ refuses a config that names a
@@ -65,7 +74,10 @@ mode and says why.
 
 The directory also holds `store.json`, `control.sock`, `admission.sock` and
 `broker.sock`, all 0600, and `signer/` (0700) with the signer's pin and,
-under the `software` backend only, its key file.
+under the `software` backend only, its key file. With `enrollment.source`
+`hq` it also holds `identity/` (0700): the device record, the record a
+re-enrollment replaced, and the pinned response-signing key. None of those
+is a secret.
 
 ## Interim account: D4's stated risk
 
@@ -89,10 +101,13 @@ peer-credential check and a service unit, is #88.
 - Signed plugin packages and plugin upgrade. The pins file is the only
   trust anchor, and changing it is a reviewed change to this repository.
 - The rest of the signer row (§9 rows 15b to 15d): the Secure Enclave
-  helper and qualification of the TPM helper on real hardware, enrollment and re-enrollment with the
-  identity service on the signer's key, and soul tokens without
-  `vouch-key.pem`. Until then device status still comes from the legacy
-  enrollment, whose device key is not the signer's.
+  helper and qualification of the TPM helper on real hardware, and soul
+  tokens without `vouch-key.pem`.
+- Making HQ's enrollment the default. It has run against a stand-in
+  identity service only, never the real one, so `enrollment.source` stays
+  `legacy` until the owner enrolls a real HQ with it. Unlike the legacy
+  client, a forced re-enrollment does not keep the old enrollment alive
+  while the new grant is pending.
 - The identity-service link (PRs 10 and 18), grants and credential references in Equip (PRs 18 and 21), and
   `accept-revision` (PR 21).
 - The HQ account, the peer-credential check and the service unit (#88,
