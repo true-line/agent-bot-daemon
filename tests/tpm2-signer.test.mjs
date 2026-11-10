@@ -8,6 +8,8 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
+import { derToP1363 } from '../helpers/tpm2-signer.mjs';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -47,6 +49,20 @@ before(async () => {
 after(() => {
   swtpm?.kill('SIGTERM');
   if (state) rmSync(state, { recursive: true, force: true });
+});
+
+test('DER signatures from tpm2-tools convert to r || s, and anything else is refused', () => {
+  const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  for (let i = 0; i < 200; i++) { // enough rounds to meet short and high-bit r and s
+    const msg = Buffer.from(`message ${i}`);
+    const p1363 = derToP1363(cryptoSign('sha256', msg, privateKey));
+    assert.equal(p1363.length, 64);
+    assert.equal(cryptoVerify('sha256', msg, { key: publicKey, dsaEncoding: 'ieee-p1363' }, p1363), true);
+  }
+  const der = cryptoSign('sha256', Buffer.from('x'), privateKey);
+  for (const bad of [Buffer.alloc(64, 1), der.subarray(0, der.length - 1), Buffer.concat([der, Buffer.from([0])]), Buffer.from([0x30, 0x06, 0x02, 0x01, 0x80, 0x02, 0x01, 0x01]), Buffer.from([0x30, 0x07, 0x02, 0x02, 0x00, 0x01, 0x02, 0x01, 0x01])]) {
+    assert.throws(() => derToP1363(bad), /not a DER ECDSA signature/);
+  }
 });
 
 test('CI has a software TPM to test against', { skip: !required }, () => {

@@ -22,9 +22,10 @@
 // identity service's check (row 17).
 import { createPublicKey } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const PROTOCOL = 'agent-bot-hq-signer/1';
 const DEFAULT_HANDLE = '0x81010020';
@@ -97,12 +98,33 @@ function sign(handle, message) {
     const msg = join(dir, 'msg.bin');
     const sig = join(dir, 'sig.bin');
     writeFileSync(msg, message, { mode: 0o600 });
-    // The TPM hashes the message itself; `plain` is r || s, 32 bytes each.
+    // The TPM hashes the message itself. For ECDSA, `plain` is the DER
+    // signature (SEQUENCE of r and s); the protocol wants r || s.
     tpm('tpm2_sign', ['-c', handle, '-g', 'sha256', '-s', 'ecdsa', '-f', 'plain', '-o', sig, msg]);
-    const raw = readFileSync(sig);
-    if (raw.length !== 64) throw new Error(`the TPM returned a ${raw.length}-byte signature, not 64`);
-    return raw.toString('base64url');
+    return derToP1363(readFileSync(sig)).toString('base64url');
   });
+}
+
+// DER ECDSA-Sig-Value → 64 bytes, r then s, each left-padded to 32. Strict:
+// short-form lengths only (a P-256 signature never needs more), no trailing
+// bytes, positive integers of at most 32 significant bytes.
+export function derToP1363(der) {
+  const bad = () => new Error('the TPM returned a signature that is not a DER ECDSA signature');
+  if (der.length < 8 || der.length > 72 || der[0] !== 0x30 || der[1] !== der.length - 2) throw bad();
+  let at = 2;
+  const out = Buffer.alloc(64);
+  for (const offset of [0, 32]) {
+    if (der[at] !== 0x02) throw bad();
+    const len = der[at + 1];
+    let value = der.subarray(at + 2, at + 2 + len);
+    if (len === 0 || len > 33 || value.length !== len || (value[0] & 0x80)) throw bad();
+    if (value[0] === 0 && len > 1) { if (!(value[1] & 0x80)) throw bad(); value = value.subarray(1); }
+    if (value.length > 32) throw bad();
+    value.copy(out, offset + 32 - value.length);
+    at += 2 + len;
+  }
+  if (at !== der.length) throw bad();
+  return out;
 }
 
 function main() {
@@ -123,10 +145,12 @@ function main() {
   throw new Error(`unknown operation ${op}`);
 }
 
-try {
-  process.stdout.write(JSON.stringify(main()));
-} catch (e) {
-  // Errors go to stderr; HQ reads the exit code and treats the signer as unavailable.
-  process.stderr.write(`tpm2-signer: ${String(e.stderr ?? e.message).trim()}\n`);
-  process.exitCode = 1;
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    process.stdout.write(JSON.stringify(main()));
+  } catch (e) {
+    // Errors go to stderr; HQ reads the exit code and treats the signer as unavailable.
+    process.stderr.write(`tpm2-signer: ${String(e.stderr ?? e.message).trim()}\n`);
+    process.exitCode = 1;
+  }
 }
