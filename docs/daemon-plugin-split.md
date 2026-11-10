@@ -1036,12 +1036,33 @@ one member can read another's key as easily as its binding. So:
 - Neither layer restrains a member acting as itself. What a member may do is
   limited by its grants, not by how it proves who it is.
 
-Open questions for the owner, each with a recommendation, settled in the
-slice that needs it:
+**Decided by the owner on 2026-11-10 (16b): who starts a member.** HQ
+starts each member under that member's account, through a rule that
+agent-bot-machine installs once at provisioning. HQ is not root and gets no
+other privilege.
+
+- The rule lets the HQ account, and nobody else, start a process as a member
+  account, and as nothing else: not root, not `admin`, not the owner. HQ
+  cannot change the rule, because it belongs to the provisioner.
+- Launches do not go through agent-machine at runtime. It holds the keys
+  (D4), so it must not be the parent of the code trusted least, and the entry
+  point's pipes to a member would have to cross accounts.
+- The stated cost: a compromised HQ can start any command as any member
+  account. It can do nothing a member could not already do.
+- The first form is a sudoers rule. A systemd unit per member can replace it
+  without changing what HQ asks for.
+- Before the provisioner runs any command as root, the owner sees the
+  request and accepts it in the local web UI or on the website. Nothing
+  privileged runs on an agent's word alone.
+- agent-bot-machine also creates the member accounts and the endpoint
+  directories of 16a. Its contract is
+  [agent-bot-machine#470](https://github.com/true-line/agent-bot-machine/issues/470).
+
+Open question for the owner, with a recommendation, settled in the slice
+that needs it:
 
 | Question | Recommendation |
 | --- | --- |
-| What lets HQ start a process as a member account without being root? | A launcher installed by agent-bot-machine that accepts only the HQ account and only member accounts as targets. It is the provisioner's to install, so its contract is agreed with that repository first |
 | How is egress blocked? | A per-account firewall rule set by the provisioner, checked by HQ at admission. A network namespace per member is stronger and can replace it later without changing the test |
 
 ### Stage 2b: brokered adapters (WP2, WP4)
