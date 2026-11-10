@@ -20,6 +20,7 @@ node hq/main.mjs souls    # admitted Souls and their runtimes
 | Durable store: the SDK's tables, blobs and receipts, written atomically to `store.json` (0600) in a 0700 directory. It refuses a wider directory and never overwrites a store it cannot read. | `store.mjs` | §3.2, §4.3 |
 | Control socket (owner), admission socket (entry points) and member broker socket. The auth class is the socket, never a client field. Strict NDJSON. Registry refusals are common/v1 error responses; host refusals go in a separate `host_refusal` field. | `socket.mjs` | §7.1, §7.2 |
 | Member broker socket ([§9 row 13b](../docs/daemon-plugin-split.md#49-the-member-broker-socket-stage-1)): `broker.sock`, whose frames go to the one plugin serving the broker (`ctx.broker.serve`). It binds a connection with `bind { runtime_id, channel_binding }` through hq-admission's `verifyBinding` and delivers later frames with `ctx.broker.deliver`; consumers authorize by the bound runtime. agent-comms ships the broker plugin; HQ alone refuses every frame with `host.no_broker`. | `hq.mjs`, `socket.mjs` | §4.9 |
+| Member accounts ([§9 row 16a](../docs/daemon-plugin-split.md#stage-2a-member-isolation-wp2), Linux): with `members` in the config, each member account gets its own broker endpoint, `<dir>/<account>/broker.sock`, mode 0660 in a 2750 directory of that account's private group, so the file system tells HQ which account is calling. A runtime is bound to its member's account at admission, and that is kept in the store. It then binds only from that account's endpoint and only with a keyed proof: `bind.challenge { runtime_id }` returns a nonce, and `bind { runtime_id, proof }` answers with HMAC-SHA-256 over it, keyed with the channel binding, which is never sent. Anything else is `caller_mismatch`. HQ verifies the directory layout and refuses to start on any other; the provisioner makes it. | `members.mjs`, `admission.mjs`, `hq.mjs` | §9 row 16a |
 | Owner sessions: one per control connection, recorded in the store and closed on disconnect or at the next start. | `hq.mjs` | §7.2 |
 | Profile reporting: the profile in force, with the reasons a stronger one is not. Never `managed-protected` before §9 PR 16. | `profile.mjs` | §3.3, R8 |
 | Task service ([§9 PR 13](../docs/daemon-plugin-split.md#stage-1-local-vertical-slice-wp2wp4), #40): `task/v1` records in the store, the `task-v1` provider (platform PDR-0024). Members commit through `task.commit` with their runtime, over the admission connection or brokered with their bound runtime; only the task Soul's current lead at the current epoch and lease commits, and a specialist's request is recorded as a proposal (T20). CAS on the expected revision (`revision_conflict`), one commit per operation ID with the stored receipt for an exact repeat (T05), write-scope exclusion (`write_scope_conflict`, unless listed in `concurrentWriters`), and offers whose requester is their authenticated source (T04). The owner offers a task with `tasks.offer` and reads `tasks.list` and `tasks.get`. A bound member reads its Soul's waiting directives with the `task.directives` kind, each a wire/v1 directive-or-query record for a task the owner or HQ offered, and one of its Soul's tasks with `task.get`. A peer's offer is never a directive. | `tasks.mjs` | §4.2, 0.4 §7 |
@@ -98,6 +99,13 @@ peer-credential check and a service unit, is #88.
 
 ## Not in this slice
 
+- The rest of the Linux protected profile (§9 rows 16b to 16d). Row 16a
+  makes HQ tell member accounts apart; it does not create the accounts,
+  start members under them, close HQ's own state to them, or block their
+  network. HQ still reports `managed-cooperative`, with members sharing one
+  account as a stated reason, until 16b. The agent-comms broker plugin and
+  the Soul entry point still send the binding itself, so they work only for
+  members without an account until they adopt the challenge.
 - Signed plugin packages and plugin upgrade. The pins file is the only
   trust anchor, and changing it is a reviewed change to this repository.
 - The rest of the signer row (§9 rows 15b to 15d): the Secure Enclave

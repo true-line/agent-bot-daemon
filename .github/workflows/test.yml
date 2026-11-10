@@ -23,9 +23,27 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends swtpm tpm2-tools
           sudo apt-get install -y -q --no-install-recommends libtss2-tcti-swtpm0t64 || sudo apt-get install -y -q --no-install-recommends libtss2-tcti-swtpm0
+      # Two member accounts and their broker endpoint directories, laid out as
+      # the provisioner would (hq/members.mjs), for tests/hq-member-accounts.test.mjs.
+      - name: member accounts
+        run: |
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hqm-a
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hqm-b
+          sudo mkdir -p /run/agent-bot-hq-test/members
+          sudo chown "$(id -u)" /run/agent-bot-hq-test /run/agent-bot-hq-test/members
+          sudo chmod 0755 /run/agent-bot-hq-test /run/agent-bot-hq-test/members
+          for a in hqm-a hqm-b; do
+            sudo mkdir "/run/agent-bot-hq-test/members/$a"
+            sudo chown "$(id -u):$a" "/run/agent-bot-hq-test/members/$a"
+            sudo chmod 2750 "/run/agent-bot-hq-test/members/$a"
+          done
+          ls -ln /run/agent-bot-hq-test/members
       - name: test
         env:
           HQ_REQUIRE_TPM: '1'
+          HQ_REQUIRE_MEMBER_ACCOUNTS: '1'
+          HQ_MEMBER_DIR: /run/agent-bot-hq-test/members
+          HQ_MEMBER_ACCOUNTS: hqm-a,hqm-b
         run: |
           node --version
           npm test
