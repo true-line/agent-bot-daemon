@@ -103,9 +103,12 @@ peer-credential check and a service unit, is #88.
 - The rest of the signer row (§9 rows 15b to 15d): the Secure Enclave
   helper and qualification of the TPM helper on real hardware, and soul
   tokens without `vouch-key.pem`.
-- Making HQ's enrollment the default. It has run against a stand-in
-  identity service only, never the real one, so `enrollment.source` stays
-  `legacy` until the owner enrolls a real HQ with it. Unlike the legacy
+- Making HQ's enrollment the default. On 2026-11-10 a throwaway HQ on macOS
+  enrolled with the real identity service on a software key: the service
+  accepted the signed proof, the owner approved the code, and HQ came up
+  enrolled after a restart. That device has not been used for anything
+  since, because HQ cannot ask for an access token yet (the link, PRs 10
+  and 18), so `enrollment.source` stays `legacy`. Unlike the legacy
   client, a forced re-enrollment does not keep the old enrollment alive
   while the new grant is pending.
 - The identity-service link (PRs 10 and 18), grants and credential references in Equip (PRs 18 and 21), and

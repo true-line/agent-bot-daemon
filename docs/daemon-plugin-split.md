@@ -950,7 +950,7 @@ repository that does the work; this repository tracks only its own rows.
 | 15 | agent-bot-daemon | WP2 | **HQ signer:** device key in TPM (Linux) or Secure Enclave (macOS) under the HQ account; soul-token key in the signer (`v2`, ES256), with `vouch-key.pem` removed; re-enrollment path. Delivered in the four slices below. | `key_storage=hardware`; no signing key file on the host; the agent-comms broker verifies soul token `v2`; T02 |
 | 15a | agent-bot-daemon | WP2 | **Signer port and key backends** (`hq/signer.mjs`): one pinned P-256 key used only through `sign`; a `software` backend (key file, transition custody) and a `helper` backend for a hardware key behind the `agent-bot-hq-signer/1` protocol; ES256 signatures on approval records; `signer rekey` | Under the helper backend HQ's state directory holds no key file and `status` reports `key_storage=hardware`; a missing or changed key is safe mode; a software key is a stated reason the profile is not protected |
 | 15b | agent-bot-daemon | WP2 | **Hardware helpers, behind the `hardwareSigner` feature flag:** a TPM 2.0 helper for the Linux reference host, and the Secure Enclave helper for macOS (needs a Developer ID build with a provisioning profile, D4). Off by default; rows 15c, 15d and 16 do not wait for it | Each helper passes the 15a helper tests on its platform, with a non-exportable key, and is qualified on real hardware before the flag's default changes |
-| 15c | agent-bot-daemon, agent-bot-identity | WP2 | **Enrollment on the signer's key** (`hq/enrollment.mjs`, opt-in with `enrollment.source: hq`; `legacy` stays the default until it has run against the real identity service): device enrollment, re-enrollment (`enroll --force`, a fresh key generation) and the jwt-bearer assertion move into HQ and are signed by the signer | The identity service's device record names the signer's key, with the `key_storage` the signer reports (`software` unless `hardwareSigner` is on); device status no longer comes from the legacy bridge |
+| 15c | agent-bot-daemon, agent-bot-identity | WP2 | **Enrollment on the signer's key** (`hq/enrollment.mjs`, opt-in with `enrollment.source: hq`; `legacy` stays the default until the identity-service link can use the enrolled device; a real enrollment on a software key succeeded on 2026-11-10): device enrollment, re-enrollment (`enroll --force`, a fresh key generation) and the jwt-bearer assertion move into HQ and are signed by the signer | The identity service's device record names the signer's key, with the `key_storage` the signer reports (`software` unless `hardwareSigner` is on); device status no longer comes from the legacy bridge |
 | 15d | agent-bot-identity, agent-comms | WP2 | **Soul tokens without a key file:** HQ asks the identity service for `v2` soul tokens (the agent-bot-comms broker already verifies them) and `vouch-key.pem` is removed, with the keyd grants it signs today | No `vouch-key.pem` on the host; soul token `v1` off. With `hardwareSigner` on there is no signing key file at all; T02 |
 | 16 | agent-bot-daemon | WP2 | **Linux protected profile:** per-member service identities, namespaces, broker socket and workspace views as the only exits, caller-bound grant handles | T01–T03, T21 |
 
@@ -963,6 +963,31 @@ hardware conditions (`key_storage=hardware`, no signing key file on the
 host) are met only with the flag on, and `managed-protected` still requires
 a hardware key (§3.3). The flag's default changes when row 15b's helpers are
 qualified on real hardware; that is an owner decision.
+
+**Row 15d, first step, on a real host (2026-11-10 UTC).** The existing
+identity daemon on the owner's Mac was switched to version 2 soul tokens:
+`legacyLocalCustody` removed, `soulTokens: "v2"` set, and the daemon paired
+again with the agent-bot-comms broker (0.5.5). The daemon then issued an
+ES256 `soul+jwt` signed by the identity service, and the broker reported the
+soul and its peers as `verified`. No soul token on that host is signed by
+`vouch-key.pem` any more.
+
+The file is still there, because it has four uses and this step moved one:
+
+| Use of `vouch-key.pem` | State |
+| --- | --- |
+| Signing version 1 soul tokens | Moved: version 2 tokens come from the identity service |
+| The daemon's pairing with the comms broker | Moved for token checks; the broker's account watch still expects the key (see below) |
+| Signing keyd grants | Unchanged; moves with rows 17 and 18 |
+| The daemon identity in owner-decision evidence | Unchanged; needs a decision in agent-bot-comms |
+
+Two findings from the run, both in
+[agent-bot-comms issue 309](https://github.com/true-line/agent-bot-comms/issues/309):
+with a version 2 pairing the broker's account watch fails with `internal`,
+because it and the owner-decision evidence are keyed by the daemon's Ed25519
+host key; and a broker that cannot refresh the service's signing keys rejects
+every version 2 token without logging why. Row 15d is not done until the
+first is resolved and the keyd grants no longer need the file.
 
 ### Stage 2b: brokered adapters (WP2, WP4)
 
