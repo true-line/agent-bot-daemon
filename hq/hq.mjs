@@ -41,7 +41,8 @@ import { checkSocketPath, listenSocket } from './socket.mjs';
 import { coreTable, CORE_PLUGIN, ensurePrivateDir, openStore } from './store.mjs';
 
 export const HQ_VERSION = '0.1.0';
-const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'concurrentWriters', 'legacy', 'signer']);
+const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'concurrentWriters', 'legacy', 'signer', 'features']);
+const FEATURE_KEYS = new Set(['hardwareSigner']);
 const LEGACY_KEYS = new Set(['supervise', 'probeIntervalMs']);
 const DEFAULT_PROBE_MS = 30_000;
 
@@ -81,7 +82,22 @@ export function validateConfig(c) {
     || !c.concurrentWriters.every((w) => typeof w === 'string' && w.length > 0 && w.length <= 256))) {
     throw new Error('HQ config: concurrentWriters is a list of workspaces');
   }
-  if (c.signer !== undefined) validateSignerConfig(c.signer);
+  // Feature flags, all off by default. hardwareSigner gates the helper
+  // backend (a TPM or Secure Enclave key): it is experimental until its
+  // helpers are qualified on real hardware, and nothing else waits on it.
+  if (c.features !== undefined) {
+    if (!c.features || typeof c.features !== 'object' || Array.isArray(c.features)) throw new Error('HQ config: features is an object');
+    for (const [k, v] of Object.entries(c.features)) {
+      if (!FEATURE_KEYS.has(k)) throw new Error(`HQ config: unknown key features.${k}`);
+      if (typeof v !== 'boolean') throw new Error(`HQ config: features.${k} is a boolean`);
+    }
+  }
+  if (c.signer !== undefined) {
+    validateSignerConfig(c.signer);
+    if (c.signer.backend === 'helper' && c.features?.hardwareSigner !== true) {
+      throw new Error('HQ config: the helper signer backend is behind a feature flag; set features.hardwareSigner to true to use it');
+    }
+  }
   if (c.legacy !== undefined) {
     if (!c.legacy || typeof c.legacy !== 'object' || Array.isArray(c.legacy)) throw new Error('HQ config: legacy is an object');
     for (const k of Object.keys(c.legacy)) if (!LEGACY_KEYS.has(k)) throw new Error(`HQ config: unknown key legacy.${k}`);
@@ -224,6 +240,7 @@ export function createHQ({
           ownerSessions: openOwnerSessions(),
           pluginLoad,
           ...(signerReport() ? { signer: signerReport() } : {}),
+          features: { hardwareSigner: cfg.features?.hardwareSigner === true },
           ...(devPlugins ? { devPlugins } : {}),
         },
         legacy: legacyRunner.report(),
