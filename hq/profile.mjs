@@ -6,7 +6,8 @@
 // (Linux) and PR 29 (macOS), so this skeleton never reports it:
 //   - HQ runs in its own OS account (D6: _agent-bot-hq / agent-bot-hq);
 //   - each member runs under its own principal (D7, PR 16);
-//   - the host passed the hostile-member qualification (T01–T03, T21).
+//   - the host passed the hostile-member qualification (T01–T03, T21);
+//   - the HQ signer's key is a hardware key, not a key file (§9 PR 15).
 // managed-cooperative: the device is managed (enrolled with the identity
 // service) but containment is not enforced.
 // standalone-unenforced: the owner chose standalone in HQ's config.
@@ -19,6 +20,7 @@ export function detectProfile({
   memberPrincipals = false,    // per-member principals in place (PR 16 / PR 29)
   qualified = false,           // hostile-member suite passed on this host
   standalone = false,          // owner config: run standalone, unenforced
+  keyStorage,                  // the HQ signer's custody: hardware | software (hq/signer.mjs)
 } = {}) {
   const reasons = [];
   const expected = HQ_ACCOUNTS[platform];
@@ -26,6 +28,7 @@ export function detectProfile({
   else if (account !== expected) reasons.push(`HQ runs in the ${account ?? 'unknown'} account, not ${expected} (D6; agent-bot-machine has not provisioned it)`);
   if (!memberPrincipals) reasons.push('members share one account: no per-member principals (D7)');
   if (!qualified) reasons.push('the host has not passed the hostile-member qualification (T01–T03, T21)');
+  if (keyStorage !== 'hardware') reasons.push(`the HQ signer's key is ${keyStorage === 'software' ? 'a key file in HQ state (key_storage=software)' : 'not known to be a hardware key'}, so a process in HQ's account can copy it`);
   if (standalone) return { profile: 'standalone-unenforced', reasons: ['the owner chose standalone in HQ config', ...reasons] };
   // Protected only when every condition holds; this skeleton has no way to
   // satisfy the last two, so it falls through to cooperative.

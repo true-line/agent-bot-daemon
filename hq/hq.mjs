@@ -5,14 +5,16 @@
 // RISK-008 in the platform's register); hq/legacy.mjs is the bridge.
 //
 // Bootstrap follows §4.4 through the SDK host: HQ core reads device status
-// first (here from the legacy enrollment), an unenrolled device or an
-// unreadable signer is safe mode, a revoked one is device_revoked, and
-// plugins start only after that. The sockets open in every mode, so the owner
+// first (here from the legacy enrollment, through the HQ signer), an
+// unenrolled device or an unavailable signer is safe mode, a revoked one is
+// device_revoked, and plugins start only after that. The sockets open in every mode, so the owner
 // can always ask for status.
 //
 // Layout of the state directory (0700; HQ's account):
 //   config.json     owner-written settings, read-only to HQ (optional)
 //   store.json      the authoritative store (hq/store.mjs), 0600
+//   signer/         the HQ signer's pin, and its key file under the software
+//                   backend only (hq/signer.mjs), 0700
 //   control.sock    hq/v1 for the owner, 0600
 //   admission.sock  hq/v1 for Soul entry points, 0600
 //   broker.sock     member broker frames, served by one plugin (§4.9), 0600
@@ -33,12 +35,13 @@ import { admissionPlugin } from './admission.mjs';
 import { tasksPlugin } from './tasks.mjs';
 import { legacyDaemon, legacySigner } from './legacy.mjs';
 import { detectProfile } from './profile.mjs';
+import { backendFromConfig, createSigner, validateSignerConfig } from './signer.mjs';
 import { loadPlugins } from './plugins.mjs';
 import { checkSocketPath, listenSocket } from './socket.mjs';
 import { coreTable, CORE_PLUGIN, ensurePrivateDir, openStore } from './store.mjs';
 
 export const HQ_VERSION = '0.1.0';
-const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'concurrentWriters', 'legacy']);
+const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'concurrentWriters', 'legacy', 'signer']);
 const LEGACY_KEYS = new Set(['supervise', 'probeIntervalMs']);
 const DEFAULT_PROBE_MS = 30_000;
 
@@ -78,6 +81,7 @@ export function validateConfig(c) {
     || !c.concurrentWriters.every((w) => typeof w === 'string' && w.length > 0 && w.length <= 256))) {
     throw new Error('HQ config: concurrentWriters is a list of workspaces');
   }
+  if (c.signer !== undefined) validateSignerConfig(c.signer);
   if (c.legacy !== undefined) {
     if (!c.legacy || typeof c.legacy !== 'object' || Array.isArray(c.legacy)) throw new Error('HQ config: legacy is an object');
     for (const k of Object.keys(c.legacy)) if (!LEGACY_KEYS.has(k)) throw new Error(`HQ config: unknown key legacy.${k}`);
@@ -91,7 +95,8 @@ export function createHQ({
   home,
   schemas,                       // pinned schemas by name: hq/v1 (admission.mjs SCHEMA_NAMES), task/v1 and wire/v1 (tasks.mjs TASK_SCHEMA_NAMES, TASK_WIRE_SCHEMA_NAMES)
   config,                        // defaults to <home>/config.json
-  signer = legacySigner(),
+  signer,                        // defaults to the HQ signer on the config's key backend (hq/signer.mjs)
+  enrollment = legacySigner(),   // where device status and enrollment come from until they move into HQ
   legacy,                        // defaults to legacyDaemon with the config's supervise flag
   clock = { now: () => Date.now() },
   random = cryptoRandom(),
@@ -162,7 +167,9 @@ export function createHQ({
     if (running) throw new Error('HQ is already running');
     ensurePrivateDir(home, { uid });
     const cfg = validateConfig(config ?? readConfig(home, { uid }));
-    profileInfo = detectProfile({ platform, account, standalone: cfg.standalone === true });
+    signer ??= createSigner({ home, backend: backendFromConfig(cfg.signer, { home, uid }), enrollment, uid, clock });
+    const signerReport = () => (typeof signer.report === 'function' ? signer.report() : undefined);
+    profileInfo = detectProfile({ platform, account, standalone: cfg.standalone === true, keyStorage: signerReport()?.key_storage });
     legacyRunner ??= legacyDaemon({ supervise: cfg.legacy?.supervise === true, clock });
 
     if (platform !== 'win32') for (const p of [paths.control, paths.admission, paths.broker]) checkSocketPath(p, platform);
@@ -216,6 +223,7 @@ export function createHQ({
           sockets: { control: paths.control, admission: paths.admission, broker: paths.broker, access: 'file mode 0600 in a 0700 directory (no peer-credential check yet)' },
           ownerSessions: openOwnerSessions(),
           pluginLoad,
+          ...(signerReport() ? { signer: signerReport() } : {}),
           ...(devPlugins ? { devPlugins } : {}),
         },
         legacy: legacyRunner.report(),

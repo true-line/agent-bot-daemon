@@ -26,6 +26,7 @@ node hq/main.mjs souls    # admitted Souls and their runtimes
 | hq/v1 Hello (with the admission result), Admit, Equip, Ready and Lease, checked against the pinned schemas in both directions. Versions are N/N−1 (T14). The owner's config holds the accepted definitions, there is one current installation epoch per Soul (T15), and leases have generations and renewal sequences. Runtimes are bound to the admitting connection. | `admission.mjs` | §4.2, 0.4 §5 |
 | Bootstrap per §4.4 through the SDK host. Device status comes from the legacy enrollment, so an unenrolled device or an unreadable signer is safe mode, and a revoked device is `device_revoked`. With no identity-service link yet, credentials refuse with `credential_unavailable`. | `hq.mjs`, `legacy.mjs` | §4.4, §4.7 |
 | Installed plugins: one directory per plugin, with `plugin.json` (static fields) and `plugin.mjs`. Before any plugin code runs, the tree's sha256-manifest-v1 digest must match its pin in [`governance/plugins.json`](../governance/plugins.json), and the set must resolve from `plugin.json` alone. The code's `definePlugin` fields must then equal `plugin.json`. Symlinks are refused. A refused plugin gets a `hq.plugin.refused` receipt and a reason in status, and its dependents are refused with it. `--dev-plugins` skips the pin and status always names it. Core names (`hq`, `hq-admission`, `hq-tasks`) cannot be taken. | `plugins.mjs` | §4.1, §4.5 |
+| The HQ signer ([§9 row 15a](../docs/daemon-plugin-split.md#stage-2a-member-isolation-wp2)): one pinned P-256 key, used only through `sign`. Approval records carry its ES256 signature. The `software` backend keeps a key file in `signer/` (transition custody, `key_storage=software`); the `helper` backend runs an external helper that holds a hardware key and HQ keeps no key file (`key_storage=hardware`). HQ pins the public key's thumbprint, verifies every signature against it, and treats a missing or changed key as an unavailable signer, which is safe mode. `status` names the backend and custody, and a software key is a stated reason the profile is not `managed-protected`. `signer rekey` replaces the key while HQ is stopped. | `signer.mjs` | §3.2, §4.4 |
 | The existing daemon is probed and reported. It is started only when `legacy.supervise` is on, and never stopped. | `legacy.mjs` | §8.2 |
 
 ## State directory
@@ -39,12 +40,20 @@ others can write it, and refuses unknown keys:
   "leaseTtlMs": 60000,
   "concurrentWriters": ["workspace:shared"],
   "standalone": false,
-  "legacy": { "supervise": false, "probeIntervalMs": 30000 }
+  "legacy": { "supervise": false, "probeIntervalMs": 30000 },
+  "signer": { "backend": "helper", "command": ["/usr/local/libexec/hq-signer"] }
 }
 ```
 
+`signer` is optional. Without it the backend is `software`. A `helper` is
+named by absolute path and speaks `agent-bot-hq-signer/1`, described at the
+top of [`signer.mjs`](signer.mjs). Changing the backend of a pinned key needs
+`node hq/main.mjs signer rekey` with HQ stopped; until then HQ starts in safe
+mode and says why.
+
 The directory also holds `store.json`, `control.sock`, `admission.sock` and
-`broker.sock`, all 0600.
+`broker.sock`, all 0600, and `signer/` (0700) with the signer's pin and,
+under the `software` backend only, its key file.
 
 ## Interim account: D4's stated risk
 
@@ -54,8 +63,12 @@ exists, HQ runs in the owner's `user` account. D4's stated residual risk
 then covers HQ too: any process in `user`, members included, can read HQ's
 store and connect to every socket. The file mode is the only access check,
 because Node has no peer-credential API. HQ reports `managed-cooperative`
-and names the account as a reason. The skeleton holds no credentials, no
-grants and no signing key, so nothing it stores is a secret. This is
+and names the account as a reason. The skeleton holds no credentials and no
+grants. Under the default `software` signer backend it does hold one secret:
+the signer's key file, which any process in that account can copy. That key
+signs approval records only; it is not the enrolled device key yet, and
+`status` and the profile reasons say it is a key file. The `helper` backend
+keeps no key file. This is
 HQ-RISK-07 in plan §10.3. Moving HQ to its own account, with a
 peer-credential check and a service unit, is #88.
 
@@ -63,8 +76,12 @@ peer-credential check and a service unit, is #88.
 
 - Signed plugin packages and plugin upgrade. The pins file is the only
   trust anchor, and changing it is a reviewed change to this repository.
-- The real signer and enrollment (§9 PR 15), the identity-service link (PRs
-  10 and 18), grants and credential references in Equip (PRs 18 and 21), and
+- The rest of the signer row (§9 rows 15b to 15d): the hardware helpers
+  themselves (TPM, Secure Enclave), enrollment and re-enrollment with the
+  identity service on the signer's key, and soul tokens without
+  `vouch-key.pem`. Until then device status still comes from the legacy
+  enrollment, whose device key is not the signer's.
+- The identity-service link (PRs 10 and 18), grants and credential references in Equip (PRs 18 and 21), and
   `accept-revision` (PR 21).
 - The HQ account, the peer-credential check and the service unit (#88,
   after agent-bot-machine S6), and the Windows named pipe (#89).

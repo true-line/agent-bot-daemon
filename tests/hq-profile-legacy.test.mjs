@@ -9,18 +9,26 @@ import { fakeLegacy } from './hq-harness.mjs';
 test('HQ in the owner account reports managed-cooperative and every reason protected is out of reach', () => {
   const p = detectProfile({ platform: 'darwin', account: 'user' });
   assert.equal(p.profile, 'managed-cooperative');
-  assert.equal(p.reasons.length, 3);
+  assert.equal(p.reasons.length, 4);
   assert.match(p.reasons[0], /user account, not _agent-bot-hq \(D6/);
   assert.match(p.reasons[1], /per-member principals/);
   assert.match(p.reasons[2], /T01–T03, T21/);
+  assert.match(p.reasons[3], /not known to be a hardware key/);
+  assert.match(detectProfile({ platform: 'darwin', account: 'user', keyStorage: 'software' }).reasons[3], /key_storage=software/);
+  assert.equal(detectProfile({ platform: 'darwin', account: 'user', keyStorage: 'hardware' }).reasons.length, 3);
 });
 
 test('even in its own account, HQ without member principals and qualification is not protected', () => {
   for (const [platform, account] of [['darwin', '_agent-bot-hq'], ['linux', 'agent-bot-hq']]) {
-    const p = detectProfile({ platform, account });
+    const p = detectProfile({ platform, account, keyStorage: 'hardware' });
     assert.equal(p.profile, 'managed-cooperative', platform);
     assert.equal(p.reasons.length, 2);
   }
+  // Everything else in place, a key file still keeps the host out of protected.
+  const all = { platform: 'linux', account: 'agent-bot-hq', memberPrincipals: true, qualified: true };
+  assert.equal(detectProfile({ ...all, keyStorage: 'hardware' }).profile, 'managed-protected');
+  assert.equal(detectProfile({ ...all, keyStorage: 'software' }).profile, 'managed-cooperative');
+  assert.equal(detectProfile(all).profile, 'managed-cooperative');
   assert.equal(detectProfile({ platform: 'linux', account: 'agent-bot-hq', memberPrincipals: true }).profile, 'managed-cooperative');
   assert.match(detectProfile({ platform: 'win32', account: 'x' }).reasons[0], /no HQ account defined/);
 });
@@ -56,7 +64,7 @@ test('the legacy signer reports device state and throws when it cannot read one;
   assert.equal(await signer.deviceStatus(), 'enrolled');
   l.state.device = 'broken';
   await assert.rejects(signer.deviceStatus(), /gave no device state/);
-  assert.throws(() => signer.sign(Buffer.from('x')), /PR 15/);
+  assert.throws(() => signer.sign(Buffer.from('x')), /legacy enrollment signs nothing/);
   assert.equal(signer.verify(), false);
   assert.throws(() => signer.enroll(), (e) => e.code === 'host.invalid_request');
 });
