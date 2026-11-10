@@ -72,12 +72,18 @@ function create(handle, replace) {
     if (!replace) throw new Error(`a key already exists at ${handle}; replacing it is a re-enrollment`);
     tpm('tpm2_evictcontrol', ['-C', 'o', '-c', handle]);
   }
+  // Talking to a TPM directly (no resource manager, as with a software TPM
+  // over a socket), each tool leaves its transient objects loaded and the
+  // chip has room for about three. Flush them before and after. Behind the
+  // kernel resource manager (/dev/tpmrm0) this flushes nothing of anyone else's.
+  const flush = () => { try { tpm('tpm2_flushcontext', ['-t']); } catch { /* nothing to flush */ } };
+  flush();
   withScratch((dir) => {
     const f = (n) => join(dir, n);
     tpm('tpm2_createprimary', ['-C', 'o', '-G', 'ecc256', '-c', f('primary.ctx')]);
     tpm('tpm2_create', ['-C', f('primary.ctx'), '-G', 'ecc256:ecdsa-sha256', '-a', KEY_ATTRIBUTES, '-u', f('key.pub'), '-r', f('key.priv')]);
     tpm('tpm2_load', ['-C', f('primary.ctx'), '-u', f('key.pub'), '-r', f('key.priv'), '-c', f('key.ctx')]);
-    tpm('tpm2_evictcontrol', ['-C', 'o', '-c', f('key.ctx'), handle]);
+    try { tpm('tpm2_evictcontrol', ['-C', 'o', '-c', f('key.ctx'), handle]); } finally { flush(); }
   });
   return publicJwkOf(handle);
 }

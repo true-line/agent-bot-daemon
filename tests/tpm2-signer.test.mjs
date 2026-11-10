@@ -63,7 +63,8 @@ test('TPM helper: creates a key in the TPM, signs with it, and HQ holds no key f
   const home = tempHome();
   try {
     const probe = spawnSync(process.execPath, [HELPER, '--handle', '0x8101002f', 'create'], { input: '{}', env, encoding: 'utf8' });
-    assert.equal(probe.status, 0, explain('0x8101002e', 'create'));
+    assert.equal(probe.status, 0, `create exit ${probe.status}: ${probe.stderr}`);
+    assert.match(explain('0x8101002f', 'create'), /already exists/);
     const signer = createSigner({ home, backend: backend(), enrollment });
     assert.equal(await signer.deviceStatus(), 'enrolled');
     const report = signer.report();
