@@ -47,3 +47,34 @@ jobs:
         run: |
           node --version
           npm test
+  # The same TPM signer tests against the milestone 2a reference host's real
+  # vTPM (Hyper-V, Ubuntu 24.04), on the self-hosted runner labelled tpm.
+  # Fork pull requests never reach that runner: only pushes to this
+  # repository and pull requests from its own branches run here.
+  vtpm:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, tpm]
+    timeout-minutes: 15
+    concurrency:
+      group: vtpm-reference-host
+      cancel-in-progress: false
+    steps:
+      # Plain git, as above. The workspace persists on a self-hosted runner, so
+      # start clean, and fetch by URL so the token is never written to .git/config.
+      - name: checkout
+        env:
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+        run: |
+          find . -mindepth 1 -delete
+          git init -q .
+          git fetch -q --no-tags --depth 1 "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "+${REF}:refs/ci/head"
+          git checkout -q --detach refs/ci/head
+      - name: test (vTPM)
+        env:
+          HQ_REQUIRE_TPM: '1'
+          HQ_TPM_TCTI: device:/dev/tpmrm0
+        run: |
+          node --version
+          node --test --test-concurrency=1 tests/tpm2-signer.test.mjs
