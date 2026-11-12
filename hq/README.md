@@ -66,7 +66,17 @@ row 15b), and no other work waits on it. `status` reports the flag.
 [`helpers/tpm2-signer.mjs`](../helpers/tpm2-signer.mjs) is the TPM 2.0
 helper for Linux. It needs `tpm2-tools` and access to the TPM device, keeps
 the key at a persistent handle inside the TPM, and is tested in CI against a
-software TPM only. Its header states its limits.
+software TPM only. Its header states its limits. To run the same tests on a
+host with a real or virtual TPM, name the TPM in `HQ_TPM_TCTI`:
+
+```sh
+HQ_REQUIRE_TPM=1 HQ_TPM_TCTI=device:/dev/tpmrm0 node --test tests/tpm2-signer.test.mjs
+```
+
+The tests then use persistent handles `0x8101002e`, `0x8101002f` and
+`0x81010021` to `0x81010023`, evict them before and after, and never touch
+the helper's default handle `0x81010020`. That run is done by hand on the
+host: this repository is public and its CI uses hosted runners only.
 
 `signer` is optional. Without it the backend is `software`. A `helper` is
 named by absolute path and speaks `agent-bot-hq-signer/1`, described at the
