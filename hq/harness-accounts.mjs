@@ -70,12 +70,12 @@ export function validateHarnessesConfig(h) {
 // The host's record of an account: { uid, gid, groupMembers, home }. Through
 // getent, so directory services count as well as /etc/passwd.
 export function resolveAccount(name, { run = (file, args) => execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }) } = {}) {
-  let passwd;
-  try { passwd = run('getent', ['passwd', name]).trim().split('\n')[0].split(':'); } catch { throw new Error(`harness account ${name} does not exist on this host`); }
-  const uid = Number(passwd[2]);
-  const gid = Number(passwd[3]);
-  const home = passwd[5];
-  if (passwd[0] !== name || !Number.isSafeInteger(uid) || !Number.isSafeInteger(gid) || typeof home !== 'string') throw new Error(`harness account ${name}: unreadable passwd entry`);
+  let entry; // the account database record: name, uid, gid, home. It holds no secret.
+  try { entry = run('getent', ['passwd', name]).trim().split('\n')[0].split(':'); } catch { throw new Error(`harness account ${name} does not exist on this host`); }
+  const uid = Number(entry[2]);
+  const gid = Number(entry[3]);
+  const home = entry[5];
+  if (entry[0] !== name || !Number.isSafeInteger(uid) || !Number.isSafeInteger(gid) || typeof home !== 'string') throw new Error(`harness account ${name}: unreadable passwd entry`);
   let groupMembers = [];
   try {
     const group = run('getent', ['group', String(gid)]).trim().split('\n')[0].split(':');
