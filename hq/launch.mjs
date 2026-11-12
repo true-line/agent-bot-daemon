@@ -93,8 +93,9 @@
 //
 // Every signal command ends `2>/dev/null; exit 0`, so `kill` finding nothing
 // to signal is success and any other exit means sudo or the rule failed. A
-// failed signal, a timeout, a spawn error, or sudo still running
-// KILL_WAIT_MS after the KILL is a launch HQ could not contain: its state is
+// signal command that fails (a non-zero exit, a timeout, or sudo not
+// running for it), or the launch's sudo still running KILL_WAIT_MS after the
+// KILL, is a launch HQ could not contain: its state is
 // `uncontained`, its slot is kept (a new launch for that Soul and agent is
 // host.launch_busy and says why), status shows it, its `hq.launch.exited`
 // receipt says `contained: false`, and the log says what the owner must
@@ -111,7 +112,8 @@
 // (the process or file limit) fails that launch only.
 //
 // The agent's stderr goes to HQ's log, clipped and rate limited, with the
-// values of SECRET_ENV replaced by [redacted] first.
+// values of SECRET_ENV replaced by [redacted] first, in the agent's text and
+// then in the whole message HQ writes for it.
 //
 // Readiness. At start HQ runs `sudo -n -u <account> -- /bin/true` once per
 // harness account, in parallel and bounded. Without the rule HQ still starts
@@ -378,6 +380,9 @@ export function createLauncher({
     let windowStart = core.clock.now();
     let count = 0;
     let dropped = 0;
+    // What the sink writes is redacted as a whole message too, so a secret
+    // never appears in one of its lines, even one equal to a name HQ prints.
+    const say = (level, message) => log(level, scrub(l, message, false), { launch_id: l.launch_id });
     // Redacted on the whole assembled line, then clipped, so a clip cannot
     // leave a readable part of a secret.
     const emit = (raw, cut = false) => {
@@ -385,14 +390,14 @@ export function createLauncher({
       const line = scrub(l, raw, cut);
       const now = core.clock.now();
       if (now - windowStart >= STDERR_WINDOW_MS) {
-        if (dropped) log('warn', `agent ${l.member_id} in ${l.account}: ${dropped} stderr lines dropped`, { launch_id: l.launch_id });
+        if (dropped) say('warn', `agent ${l.member_id} in ${l.account}: ${dropped} stderr lines dropped`);
         windowStart = now;
         count = 0;
         dropped = 0;
       }
       if (count >= STDERR_LINES) { dropped += 1; return; }
       count += 1;
-      log('info', `${prefix}${cut ? `${line.slice(0, STDERR_LINE - 3)}...` : clipLine(line)}`, { launch_id: l.launch_id });
+      say('info', `${prefix}${cut ? `${line.slice(0, STDERR_LINE - 3)}...` : clipLine(line)}`);
     };
     return (chunk) => {
       const parts = (partial + chunk).split('\n');

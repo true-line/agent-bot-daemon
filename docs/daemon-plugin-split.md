@@ -1145,9 +1145,9 @@ installs once at provisioning. HQ is not root and gets no other privilege.
   slice.
 - **Fail closed when containment is unknown.** Every signal command ends
   `2>/dev/null; exit 0`, so a non-zero exit means sudo or the rule failed,
-  not that nothing was left to signal. A failed signal (sudo refuses, a
-  timeout, a spawn error), or sudo still running five seconds after the
-  KILL, leaves the launch `uncontained`: its slot is kept and a new launch
+  not that nothing was left to signal. A signal command that fails (sudo
+  refuses, a timeout, or sudo not running for it), or the launch's sudo
+  still running five seconds after the KILL, leaves the launch `uncontained`: its slot is kept and a new launch
   for that Soul and agent is `host.launch_busy` with the reason, status
   shows it, the `hq.launch.exited` receipt says `contained: false`, and the
   log names the process group and tells the owner to check it and the rule.

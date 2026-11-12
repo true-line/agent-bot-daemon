@@ -624,6 +624,28 @@ test('the agent\'s token never reaches the log from its stderr: whole, inside a 
   } finally { await t.cleanup(); }
 });
 
+test('a token equal to a name HQ prints is redacted from the whole stderr message, the dropped-lines warning included', async () => {
+  const t = await setup();
+  try {
+    // The token is the agent's own member ID, which the message prefix carries.
+    const { child } = await t.started({ env: { ...ENV, AGENT_BOT_SOULS_MEMBER_TOKEN: 'm_lead' } });
+    const lines = () => t.hq.core.logs.filter((g) => g.message.startsWith(`agent [redacted] in ${A} stderr: `));
+    for (let i = 0; i < STDERR_LINES + 3; i++) child.stderr.write(`line ${i}\n`);
+    await until(() => lines().length === STDERR_LINES, 'the window filled');
+    assert.equal(lines()[0].message, `agent [redacted] in ${A} stderr: line 0`);
+    t.clock.advance(10_000);
+    child.stderr.write('after the window\n');
+    await until(() => lines().length === STDERR_LINES + 1, 'the next window');
+    const warning = t.hq.core.logs.filter((g) => /stderr lines dropped/.test(g.message));
+    assert.deepEqual(warning.map((g) => g.message), [`agent [redacted] in ${A}: 3 stderr lines dropped`]);
+    const fromSink = t.hq.core.logs.filter((g) => / stderr(:| lines dropped)/.test(g.message));
+    assert.equal(fromSink.length, STDERR_LINES + 2);
+    assert.ok(fromSink.every((g) => !g.message.includes('m_lead')));
+    child.exit(0);
+    await until(() => t.receipts('hq.launch.exited').length === 1, 'the exit receipt');
+  } finally { await t.cleanup(); }
+});
+
 test('the group is fixed by the first signal: a marker during the grace period is stderr, and TERM and KILL go to the same group', async () => {
   const timers = fakeTimers();
   const t = await setup({ timers, graceMs: 2000, sudo: { report: false } });
