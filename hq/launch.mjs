@@ -75,7 +75,9 @@
 // its group would be (below). If the marker never arrives (the read failed,
 // or stop came first and SIGNAL_TIMEOUT_MS passed), HQ falls back to sudo's
 // pid as the group, and the check that sudo exited after the KILL decides
-// whether the launch is contained.
+// whether the launch is contained. The first signal fixes the group: TERM
+// and KILL always go to the same one, and a marker that arrives after that
+// is logged as ordinary stderr.
 //
 // Stop. HQ cannot signal a process of another uid. Stop closes the agent's
 // stdin, then, as the harness account through the same rule, sends
@@ -91,12 +93,27 @@
 //
 // Every signal command ends `2>/dev/null; exit 0`, so `kill` finding nothing
 // to signal is success and any other exit means sudo or the rule failed. A
-// failed signal, a timeout, a spawn error, or sudo still running
-// KILL_WAIT_MS after the KILL is a launch HQ could not contain: its state is
+// signal command that fails (a non-zero exit, a timeout, or sudo not
+// running for it), or the launch's sudo still running KILL_WAIT_MS after the
+// KILL, is a launch HQ could not contain: its state is
 // `uncontained`, its slot is kept (a new launch for that Soul and agent is
 // host.launch_busy and says why), status shows it, its `hq.launch.exited`
 // receipt says `contained: false`, and the log says what the owner must
-// check. Only an HQ restart clears it.
+// check. Only an HQ restart clears it. `contained: true` means nothing of the
+// launch is left running as far as HQ can tell.
+//
+// A spawn that fails after launch.attach answered (sudo missing or not
+// executable) started nothing: no signal is sent, the slot is released, the
+// connection is closed, and the exit receipt says `reason: 'spawn-failed'`
+// with `spawn_error` (the error code only) and `contained: true`, which holds
+// because nothing started. When the error says sudo itself is missing or not
+// executable (SUDO_ABSENT), that account's launch is then unavailable, with
+// the reason, until HQ restarts and probes it again; any other spawn error
+// (the process or file limit) fails that launch only.
+//
+// The agent's stderr goes to HQ's log, clipped and rate limited, with the
+// values of SECRET_ENV replaced by [redacted] first, in the agent's text and
+// then in the whole message HQ writes for it.
 //
 // Readiness. At start HQ runs `sudo -n -u <account> -- /bin/true` once per
 // harness account, in parallel and bounded. Without the rule HQ still starts
@@ -123,6 +140,14 @@ export const PGID_MARKER = 'agent-bot-hq-launch pgid';
 export const LAUNCH_SHELL = `read -r _ _ _ _ g _ 2>/dev/null </proc/self/stat && printf '${PGID_MARKER} %s\\n' "$g" >&2; umask 077 && d="$HOME/.agent-bot-hq/souls/$1/$2" && mkdir -p "$d" && chmod 0700 "$d" && cd "$d" && shift 2 && exec "$@"`;
 const MARKER_LINE = /^agent-bot-hq-launch pgid ([0-9]{1,16})$/;
 export const REQUEST_ENV = Object.freeze(['AGENT_BOT_SOULS_SOCKET', 'AGENT_BOT_SOULS_MEMBER_TOKEN', 'AGENT_BOT_SOULS_MEMBER_ID', 'AGENT_BOT_SOULS_ROLE']);
+// The request variables whose values are secrets. HQ keeps their values for
+// the life of a launch, in memory only, to redact them from the agent's
+// stderr before it reaches the log; they never go into status, receipts or
+// logs, and are dropped when the launch ends.
+export const SECRET_ENV = Object.freeze(['AGENT_BOT_SOULS_MEMBER_TOKEN']);
+export const REDACTED = '[redacted]';
+// Spawn errors that say sudo itself cannot be run, now or on the next try.
+const SUDO_ABSENT = new Set(['ENOENT', 'EACCES']);
 export const BROKER_ENV = 'AGENT_BOT_SOULS_BROKER';
 export const LAUNCH_OPERATIONS = Object.freeze(['launch', 'launch.attach', 'launch.stop']);
 const SIGNALS = new Set(['TERM', 'KILL']);
@@ -301,24 +326,51 @@ export function createLauncher({
     log('error', `${what} for launch ${l.launch_id} in ${l.account} failed: ${why(r)}`, { launch_id: l.launch_id });
     return false;
   }
-  // The group to signal: the one the wrapper reported, else sudo's pid. A
-  // spawn that never got a pid started nothing, so there is no group.
-  const groupOf = (l) => l.pgid ?? l.sudoPid;
-  const signalGroup = (l, sig) => (groupOf(l) === undefined ? Promise.resolve(true) : signal(l, groupArgv(l.account, sig, groupOf(l)), `${sig} to process group ${groupOf(l)}`));
-  // Before signalling: the marker, or the end of the launch, bounded.
-  const awaitGroup = async (l) => { if (l.pgid === undefined) await within(Promise.race([l.grouped.promise, l.closed.promise]), SIGNAL_TIMEOUT_MS); };
-  const describeGroup = (l) => (l.pgid !== undefined ? `process group ${l.pgid} (reported by the wrapper; sudo pid ${l.sudoPid})` : `process group ${l.sudoPid} (sudo's pid; the wrapper reported none)`);
+  // The group to signal. Before the first signal HQ waits, bounded, for the
+  // marker or the end of the launch, then fixes the group once: the one the
+  // wrapper reported, else sudo's pid. Every later signal, the description
+  // and the uncontained log use that fixed group, so the TERM and the KILL
+  // always reach the same group and containment is judged against it; a
+  // marker that arrives after that is ordinary stderr (takeMarker). A spawn
+  // that never got a pid started nothing, so there is no group.
+  async function fixGroup(l) {
+    if (l.groupFixed) return;
+    if (l.pgid === undefined) await within(Promise.race([l.grouped.promise, l.closed.promise]), SIGNAL_TIMEOUT_MS);
+    if (l.groupFixed) return;
+    l.groupFixed = true;
+    l.group = l.pgid ?? l.sudoPid;
+  }
+  const signalGroup = (l, sig) => (l.group === undefined ? Promise.resolve(true) : signal(l, groupArgv(l.account, sig, l.group), `${sig} to process group ${l.group}`));
+  const describeGroup = (l) => (l.pgid !== undefined ? `process group ${l.group} (reported by the wrapper; sudo pid ${l.sudoPid})` : `process group ${l.group} (sudo's pid; the wrapper reported none before HQ signalled)`);
 
   // The first marker line is the launch's group (see the header for why the
   // first match is genuine and what a forged one could do), not stderr.
   function takeMarker(l, line) {
-    if (l.pgid !== undefined) return false;
+    if (l.pgid !== undefined || l.groupFixed) return false;
     const m = MARKER_LINE.exec(line.endsWith('\r') ? line.slice(0, -1) : line); // a pty may add a carriage return
     const n = m ? Number(m[1]) : NaN;
     if (!Number.isSafeInteger(n) || n <= 1) return false;
     l.pgid = n;
     l.grouped.resolve();
     return true;
+  }
+
+  // Every kept secret in `text` replaced. With `cut` (a line logged before its
+  // end was seen), a trailing run that is a proper prefix of a secret, from
+  // one character up, is dropped too: the rest of that secret is in text HQ
+  // never logs. The mirror case cannot leak: the remainder of a cut line is
+  // skipped, never logged, so no tail of a secret reaches the log from it.
+  function scrub(l, text, cut) {
+    let out = text;
+    for (const secret of l.secrets) out = out.split(secret).join(REDACTED);
+    if (cut) {
+      for (const secret of l.secrets) {
+        for (let k = Math.min(secret.length - 1, out.length); k >= 1; k--) {
+          if (out.endsWith(secret.slice(0, k))) { out = out.slice(0, -k); break; }
+        }
+      }
+    }
+    return out;
   }
 
   function stderrSink(l) {
@@ -328,17 +380,24 @@ export function createLauncher({
     let windowStart = core.clock.now();
     let count = 0;
     let dropped = 0;
-    const emit = (line) => {
+    // What the sink writes is redacted as a whole message too, so a secret
+    // never appears in one of its lines, even one equal to a name HQ prints.
+    const say = (level, message) => log(level, scrub(l, message, false), { launch_id: l.launch_id });
+    // Redacted on the whole assembled line, then clipped, so a clip cannot
+    // leave a readable part of a secret.
+    const emit = (raw, cut = false) => {
+      if (!l.secrets) return; // the launch has ended; nothing more is logged
+      const line = scrub(l, raw, cut);
       const now = core.clock.now();
       if (now - windowStart >= STDERR_WINDOW_MS) {
-        if (dropped) log('warn', `agent ${l.member_id} in ${l.account}: ${dropped} stderr lines dropped`, { launch_id: l.launch_id });
+        if (dropped) say('warn', `agent ${l.member_id} in ${l.account}: ${dropped} stderr lines dropped`);
         windowStart = now;
         count = 0;
         dropped = 0;
       }
       if (count >= STDERR_LINES) { dropped += 1; return; }
       count += 1;
-      log('info', `${prefix}${clipLine(line)}`, { launch_id: l.launch_id });
+      say('info', `${prefix}${cut ? `${line.slice(0, STDERR_LINE - 3)}...` : clipLine(line)}`);
     };
     return (chunk) => {
       const parts = (partial + chunk).split('\n');
@@ -349,7 +408,7 @@ export function createLauncher({
         emit(p);
       }
       if (partial.length > STDERR_LINE) {
-        if (!skipping) emit(partial);
+        if (!skipping) emit(partial, true);
         skipping = true;
         partial = '';
       }
@@ -360,9 +419,20 @@ export function createLauncher({
   async function lifecycle(l) {
     await Promise.race([l.exited.promise, l.halted.promise]);
     const failures = [];
-    if (l.state === 'exiting') {
+    if (l.spawnError) {
+      // sudo never ran: nothing started, so nothing is signalled. `contained`
+      // means "nothing of this launch is left running", which holds when
+      // nothing started, so the slot is released. A missing or unusable sudo
+      // marks the account unavailable until HQ restarts and probes it again;
+      // a passing error (the process limit) fails this launch only.
+      l.reason = 'spawn-failed';
+      if (l.state === 'stopping') await l.stopping;
+      const lasting = SUDO_ABSENT.has(l.spawnError);
+      if (lasting) readiness.set(l.account, Object.freeze({ available: false, reason: `sudo could not be run for a launch (${l.spawnError}); HQ checks again when it restarts` }));
+      log('error', `launch ${l.launch_id} of agent ${l.member_id} (${l.soul_id}) in ${l.account}: sudo could not be run (${l.spawnError})${lasting ? `; launch in ${l.account} is unavailable until HQ restarts` : ''}`, { launch_id: l.launch_id });
+    } else if (l.state === 'exiting') {
       // Ended on its own: what it left in its group goes too.
-      await awaitGroup(l);
+      await fixGroup(l);
       if (!(await signalGroup(l, 'KILL'))) failures.push(`the KILL to ${describeGroup(l)} failed`);
     } else {
       failures.push(...(await l.stopping));
@@ -381,14 +451,20 @@ export function createLauncher({
       // Fail closed: the slot stays taken until HQ restarts.
       l.state = 'uncontained';
       l.uncontained = failures.join('; ');
-      log('error', `launch ${l.launch_id} of agent ${l.member_id} (${l.soul_id}) in ${l.account} is not contained: ${l.uncontained}. Check for processes of ${l.account} in ${describeGroup(l)} (pgrep -g ${groupOf(l)} -u ${l.account}), end any that remain, and check that the provisioner's sudoers rule is in place; HQ keeps this agent's slot until it restarts.`, { launch_id: l.launch_id });
+      log('error', `launch ${l.launch_id} of agent ${l.member_id} (${l.soul_id}) in ${l.account} is not contained: ${l.uncontained}. Check for processes of ${l.account} in ${describeGroup(l)} (pgrep -g ${l.group} -u ${l.account}), end any that remain, and check that the provisioner's sudoers rule is in place; HQ keeps this agent's slot until it restarts.`, { launch_id: l.launch_id });
     }
-    if (l.socket && !l.socket.destroyed) {
-      l.socket.end();
-      timers.setTimeout(() => l.socket.destroy(), CLOSE_WAIT_MS)?.unref?.();
-    }
-    await receipt({ kind: 'hq.launch.exited', launch_id: l.launch_id, soul_id: l.soul_id, member_id: l.member_id, account: l.account, exit_code: l.exit?.code ?? null, signal: l.exit?.signal ?? null, reason: l.reason, contained });
+    l.secrets = undefined; // released or uncontained: the kept values go
+    if (l.socket) endSocket(l.socket);
+    await receipt({ kind: 'hq.launch.exited', launch_id: l.launch_id, soul_id: l.soul_id, member_id: l.member_id, account: l.account, exit_code: l.exit?.code ?? null, signal: l.exit?.signal ?? null, reason: l.reason, contained, ...(l.spawnError ? { spawn_error: l.spawnError } : {}) });
   }
+
+  const endSocket = (socket) => {
+    if (socket.destroyed) return;
+    socket.end();
+    timers.setTimeout(() => socket.destroy(), CLOSE_WAIT_MS)?.unref?.();
+  };
+  // An error code only (ENOENT, EACCES), never a path or a message.
+  const errorCode = (e) => (typeof e?.code === 'string' && /^[A-Z][A-Z0-9_]{0,31}$/.test(e.code) ? e.code : 'UNKNOWN');
 
   function start(l) {
     if (launches.get(l.launch_id) !== l || l.state !== 'attaching') fail('caller_mismatch', 'no launch waits for this attach');
@@ -402,7 +478,10 @@ export function createLauncher({
       fail('host.launch_unavailable', `sudo could not be started: ${e.message}`);
     }
     const sudoPid = Number.isSafeInteger(proc.pid) && proc.pid > 1 ? proc.pid : undefined;
-    Object.assign(l, { proc, sudoPid, pgid: undefined, state: 'running', started_at: core.clock.now(), env: undefined, exited: deferred(), closed: deferred(), halted: deferred(), grouped: deferred() });
+    // The secret values are kept, in memory only, until the launch ends; the
+    // rest of the environment is dropped now.
+    const secrets = SECRET_ENV.map((k) => l.env?.[k]).filter((v) => typeof v === 'string' && v.length > 0);
+    Object.assign(l, { proc, sudoPid, pgid: undefined, groupFixed: false, group: undefined, secrets, state: 'running', started_at: core.clock.now(), env: undefined, exited: deferred(), closed: deferred(), halted: deferred(), grouped: deferred() });
     const ended = (code, signal) => {
       l.exit ??= { code, signal };
       if (l.state === 'running') { l.state = 'exiting'; l.reason = 'exited'; }
@@ -410,8 +489,14 @@ export function createLauncher({
     };
     proc.once('exit', ended);
     proc.once('close', (code, signal) => { ended(code, signal); l.closed.resolve(); });
-    // A failed kill is an error event too; only a failed spawn ends the launch.
-    proc.on('error', () => { if (proc.pid === undefined) { ended(null, null); l.closed.resolve(); } });
+    // A failed kill is an error event too; only a failed spawn ends the
+    // launch, as spawn-failed (lifecycle).
+    proc.on('error', (e) => {
+      if (proc.pid !== undefined || l.spawnError) return;
+      l.spawnError = errorCode(e);
+      ended(null, null);
+      l.closed.resolve();
+    });
     // A failed pipe to or from the agent is logged, once per stream, never
     // dropped: the launch then ends through the agent's exit or a stop. EPIPE
     // on stdin is the ordinary case of an agent that exited with input unread.
@@ -428,8 +513,10 @@ export function createLauncher({
     l.done = lifecycle(l);
     receipt({ kind: 'hq.launch', launch_id: l.launch_id, soul_id: l.soul_id, member_id: l.member_id, adapter_id: l.adapter_id, runtime_id: l.runtime_id, account: l.account, argv_sha256: argvDigest(l.command), argv0: l.command[0] });
     return (socket) => {
-      l.socket = socket;
       socket.on('error', () => {});
+      // Ended before the connection was handed over (a failed spawn): close it.
+      if (l.state === 'exited' || l.state === 'uncontained') { endSocket(socket); return; }
+      l.socket = socket;
       socket.pipe(proc.stdin);
       // Not ended by the pipe: HQ ends the connection when the agent is gone.
       proc.stdout.pipe(socket, { end: false });
@@ -450,7 +537,7 @@ export function createLauncher({
       if (l.socket) l.socket.unpipe(l.proc.stdin);
       l.proc.stdin.end();
       try { l.proc.kill('SIGTERM'); } catch { /* EPERM: sudo runs as root */ }
-      await awaitGroup(l);
+      await fixGroup(l);
       if (!(await signalGroup(l, 'TERM'))) failures.push(`the TERM to ${describeGroup(l)} failed`);
       await within(l.exited.promise, graceMs);
       if (!(await signalGroup(l, 'KILL'))) failures.push(`the KILL to ${describeGroup(l)} failed`);

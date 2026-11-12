@@ -133,12 +133,22 @@ test('a harness account\'s home is verified, never repaired: a real directory, t
     l.owners[A] = UIDS[B];
     assert.throws(() => plan(), /is owned by uid/);
     l.owners[A] = UIDS[A];
-    // Any group or other bit.
-    for (const mode of [0o750, 0o705, 0o701, 0o710, 0o770]) {
+    // Exactly 0700: any group or other bit, less than the owner's full
+    // access, or a sticky bit is refused, and the message names the mode.
+    for (const mode of [0o000, 0o400, 0o500, 0o600, 0o750, 0o705, 0o701, 0o710, 0o770, 0o1700]) {
       chmodSync(l.homes[A], mode);
-      assert.throws(() => plan(), /must be 0700/, mode.toString(8));
+      const found = mode.toString(8).padStart(4, '0');
+      assert.throws(() => plan(), new RegExp(`has mode ${found}; .*must be 0700`), found);
     }
+    // setuid and setgid on a directory, which an unprivileged chmod may not
+    // keep, through lstat.
     chmodSync(l.homes[A], 0o700);
+    for (const bits of [0o4000, 0o2000]) {
+      const lstat = (path) => { const st = l.lstat(path); return path === l.homes[A] ? Object.assign(Object.create(Object.getPrototypeOf(st)), st, { mode: st.mode | bits }) : st; };
+      assert.throws(() => plan({ lstat }), new RegExp(`has mode ${(0o700 | bits).toString(8)}; .*must be 0700`), bits.toString(8));
+    }
+    assert.equal((statSync(l.homes[A]).mode & 0o7777), 0o700);
+    assert.doesNotThrow(() => plan(), '0700 is accepted');
     // A symlink to a good directory is still refused.
     renameSync(l.homes[A], `${l.homes[A]}.real`);
     symlinkSync(`${l.homes[A]}.real`, l.homes[A]);

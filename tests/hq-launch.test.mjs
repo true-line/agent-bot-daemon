@@ -561,11 +561,167 @@ test('receipts name the launch without its environment or token; stderr reaches 
     child.stderr.write('after the window\n');
     await until(() => logged().length === STDERR_LINES + 1, 'the next window');
     assert.ok(t.hq.core.logs.some((g) => /21 stderr lines dropped/.test(g.message)));
+    // The agent prints its own token: the log has it redacted.
+    child.stderr.write(`token ${ENV.AGENT_BOT_SOULS_MEMBER_TOKEN}\n`);
+    await until(() => logged().length === STDERR_LINES + 2, 'the token line');
+    assert.equal(logged().at(-1).message, `${prefix}token [redacted]`);
 
     child.exit(0);
     await until(() => t.receipts('hq.launch.exited').length === 1, 'the exit receipt');
     const kept = JSON.stringify([t.hq.core.receipts, t.hq.core.logs]);
     for (const secret of [attach, ENV.AGENT_BOT_SOULS_MEMBER_TOKEN, ENV.AGENT_BOT_SOULS_SOCKET, '--token-in-argv-is-hashed']) assert.ok(!kept.includes(secret), `${secret} is not kept`);
+  } finally { await t.cleanup(); }
+});
+
+test('the agent\'s token never reaches the log from its stderr: whole, inside a line, twice, split across chunks, or cut at the oversize limit', async () => {
+  const t = await setup();
+  const TOKEN = ENV.AGENT_BOT_SOULS_MEMBER_TOKEN;
+  try {
+    const { child } = await t.started();
+    const lines = () => stderrLogged(t);
+    const write = async (text) => { child.stderr.write(text); await tick(); };
+    let n = 0;
+    const next = async (what) => { n += 1; await until(() => lines().length === n, what); return lines().at(-1); };
+
+    await write(`${TOKEN}\n`);
+    assert.equal(await next('own line'), '[redacted]');
+    await write(`auth=${TOKEN}; ok\n`);
+    assert.equal(await next('inside a line'), 'auth=[redacted]; ok');
+    await write(`${TOKEN} and ${TOKEN}\n`);
+    assert.equal(await next('twice'), '[redacted] and [redacted]');
+    await write(`before ${TOKEN.slice(0, 10)}`);
+    await write(`${TOKEN.slice(10)} after\n`);
+    assert.equal(await next('split across chunks'), 'before [redacted] after');
+    // A whole line over the limit, the token across the clip point: redacted
+    // before the clip.
+    await write(`${'f'.repeat(STDERR_LINE - 5)}${TOKEN}\n`);
+    assert.equal(await next('long line'), `${'f'.repeat(STDERR_LINE - 5)}[redacted]`.slice(0, STDERR_LINE - 3) + '...');
+    // Logged before its end is seen: a trailing proper prefix of the token is
+    // dropped, and the rest of the line, the token's tail, is never logged.
+    // The chunk is one character over the limit, so the prefix starts before
+    // the clip point whenever it is longer than four characters.
+    for (const k of [1, 12, TOKEN.length - 1]) {
+      const pad = 'a'.repeat(STDERR_LINE + 1 - k);
+      await write(`${pad}${TOKEN.slice(0, k)}`);
+      assert.equal(await next(`cut after ${k}`), `${pad.slice(0, STDERR_LINE - 3)}...`);
+      await write(`${TOKEN.slice(k)} tail\n`);
+    }
+    // A whole token inside a line logged before its end.
+    await write(`${'b'.repeat(STDERR_LINE - 20)}${TOKEN}${'c'.repeat(40)}`);
+    assert.equal(await next('whole token in a cut line'), `${'b'.repeat(STDERR_LINE - 20)}[redacted]${'c'.repeat(40)}`.slice(0, STDERR_LINE - 3) + '...');
+    await write('rest\n');
+    await write('after\n');
+    assert.equal(await next('the next line'), 'after');
+
+    const logs = JSON.stringify(t.hq.core.logs);
+    assert.ok(!logs.includes(TOKEN));
+    for (let k = 8; k < TOKEN.length; k++) assert.ok(!logs.includes(TOKEN.slice(0, k)), `no prefix of ${k} characters`);
+    for (let k = 1; k < TOKEN.length - 7; k++) assert.ok(!logs.includes(TOKEN.slice(k)), `no suffix from ${k}`);
+    assert.ok(logs.includes('[redacted]'));
+    child.exit(0);
+    await until(() => t.receipts('hq.launch.exited').length === 1, 'the exit receipt');
+    assert.ok(!JSON.stringify([t.hq.core.receipts, t.hq.core.logs]).includes(TOKEN));
+  } finally { await t.cleanup(); }
+});
+
+test('a token equal to a name HQ prints is redacted from the whole stderr message, the dropped-lines warning included', async () => {
+  const t = await setup();
+  try {
+    // The token is the agent's own member ID, which the message prefix carries.
+    const { child } = await t.started({ env: { ...ENV, AGENT_BOT_SOULS_MEMBER_TOKEN: 'm_lead' } });
+    const lines = () => t.hq.core.logs.filter((g) => g.message.startsWith(`agent [redacted] in ${A} stderr: `));
+    for (let i = 0; i < STDERR_LINES + 3; i++) child.stderr.write(`line ${i}\n`);
+    await until(() => lines().length === STDERR_LINES, 'the window filled');
+    assert.equal(lines()[0].message, `agent [redacted] in ${A} stderr: line 0`);
+    t.clock.advance(10_000);
+    child.stderr.write('after the window\n');
+    await until(() => lines().length === STDERR_LINES + 1, 'the next window');
+    const warning = t.hq.core.logs.filter((g) => /stderr lines dropped/.test(g.message));
+    assert.deepEqual(warning.map((g) => g.message), [`agent [redacted] in ${A}: 3 stderr lines dropped`]);
+    const fromSink = t.hq.core.logs.filter((g) => / stderr(:| lines dropped)/.test(g.message));
+    assert.equal(fromSink.length, STDERR_LINES + 2);
+    assert.ok(fromSink.every((g) => !g.message.includes('m_lead')));
+    child.exit(0);
+    await until(() => t.receipts('hq.launch.exited').length === 1, 'the exit receipt');
+  } finally { await t.cleanup(); }
+});
+
+test('the group is fixed by the first signal: a marker during the grace period is stderr, and TERM and KILL go to the same group', async () => {
+  const timers = fakeTimers();
+  const t = await setup({ timers, graceMs: 2000, sudo: { report: false } });
+  try {
+    const { child, launch_id: launchId } = await t.started();
+    child.stubborn = true;
+    const answer = t.ep.request('launch.stop', { launch_id: launchId });
+    await until(() => child.stdin.writableEnded && timers.pending().includes(5000), 'the wait for the marker');
+    timers.advance(5000);
+    await until(() => t.sudo.signals().length === 1 && timers.pending().includes(2000), 'the TERM and the grace timer');
+    assert.deepEqual(t.sudo.signals(), [`${A} kill -TERM -${child.pid}`], 'no marker: sudo\'s pid');
+    // The marker arrives late, naming another group.
+    assert.notEqual(child.pgid, child.pid);
+    child.stderr.write(`${PGID_MARKER} ${child.pgid}\n`);
+    await until(() => stderrLogged(t).length === 1, 'the late marker logged');
+    assert.deepEqual(stderrLogged(t), [`${PGID_MARKER} ${child.pgid}`]);
+    timers.advance(2000);
+    await until(() => t.sudo.signals().length === 2, 'the KILL');
+    assert.deepEqual(t.sudo.signals(), [`${A} kill -TERM -${child.pid}`, `${A} kill -KILL -${child.pid}`], 'both to the fixed group');
+    // sudo's pid was not the agent's group, so the agent survived: uncontained,
+    // judged against the group that got both signals.
+    const killed = () => t.sudo.calls.find((c) => /^kill -KILL -/.test(c.args.at(-1)));
+    await until(() => killed()?.closed && timers.pending().includes(KILL_WAIT_MS), 'the wait after the KILL');
+    timers.advance(KILL_WAIT_MS);
+    assert.deepEqual((await answer).result, { launch_id: launchId, state: 'uncontained' });
+    const logged = t.hq.core.logs.find((g) => g.level === 'error' && g.message.includes('is not contained'));
+    assert.match(logged.message, new RegExp(`process group ${child.pid} \\(sudo's pid; the wrapper reported none before HQ signalled\\).*pgrep -g ${child.pid} -u hqm_a`));
+    child.exit(null, 'SIGKILL');
+  } finally { await t.cleanup(); }
+});
+
+test('a spawn that fails after attach answered: spawn-failed receipt with the code, no signal, slot freed, connection closed, the account unavailable', async () => {
+  const t = await setup({ sudo: { spawnError: 'ENOENT' } });
+  try {
+    const owner = await t.owner();
+    const res = await t.launch();
+    const conn = await attachTo(t.hq.paths.admission, { launch_id: res.result.launch_id, attach: res.result.attach });
+    assert.equal(conn.answer.ok, true, 'attach had already answered');
+    await until(() => t.receipts('hq.launch.exited').length === 1, 'the exit receipt');
+    await conn.closed;
+    const [r] = t.receipts('hq.launch.exited');
+    assert.deepEqual([r.launch_id, r.reason, r.spawn_error, r.exit_code, r.signal, r.contained], [res.result.launch_id, 'spawn-failed', 'ENOENT', null, null, true]);
+    assert.ok(!JSON.stringify(r).includes('/usr/bin/sudo'), 'a code, never a path');
+    assert.deepEqual(t.sudo.signals(), [], 'nothing started, nothing signalled');
+    const logged = t.hq.core.logs.filter((g) => g.level === 'error' && /sudo could not be run \(ENOENT\)/.test(g.message));
+    assert.equal(logged.length, 1);
+    assert.match(logged[0].message, /in hqm_a/);
+    const s = (await owner.request('status')).result;
+    assert.deepEqual(s.hq.launch.launches, [], 'the slot is free');
+    const a = s.hq.launch.accounts.find((x) => x.account === A);
+    assert.equal(a.available, false);
+    assert.match(a.reason, /sudo could not be run for a launch \(ENOENT\)/);
+    assert.ok(s.hq.profileReasons.some((x) => /harness launch is not available for hqm_a \(sudo could not be run/.test(x)));
+    // Later launches in that account are unavailable, not busy; the other account is untouched.
+    assert.match(refused(await t.launch(), 'host.launch_unavailable'), /sudo could not be run for a launch \(ENOENT\)/);
+    assert.equal((await t.launch(t.spec)).ok, true);
+  } finally { await t.cleanup(); }
+});
+
+test('a passing spawn error fails that launch only: spawn-failed receipt, the account stays available', async () => {
+  const t = await setup({ sudo: { spawnError: 'EAGAIN' } });
+  try {
+    const owner = await t.owner();
+    const res = await t.launch();
+    const conn = await attachTo(t.hq.paths.admission, { launch_id: res.result.launch_id, attach: res.result.attach });
+    await until(() => t.receipts('hq.launch.exited').length === 1, 'the exit receipt');
+    await conn.closed;
+    const [r] = t.receipts('hq.launch.exited');
+    assert.deepEqual([r.reason, r.spawn_error, r.contained], ['spawn-failed', 'EAGAIN', true]);
+    const logged = t.hq.core.logs.filter((g) => g.level === 'error' && /sudo could not be run \(EAGAIN\)/.test(g.message));
+    assert.equal(logged.length, 1);
+    assert.doesNotMatch(logged[0].message, /unavailable/);
+    const s = (await owner.request('status')).result;
+    assert.deepEqual(s.hq.launch.launches, []);
+    assert.equal(s.hq.launch.accounts.find((x) => x.account === A).available, true);
+    assert.equal((await t.launch()).ok, true, 'the next launch is accepted');
   } finally { await t.cleanup(); }
 });
 
