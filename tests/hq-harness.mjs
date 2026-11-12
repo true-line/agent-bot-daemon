@@ -168,14 +168,27 @@ export class FakeChild extends EventEmitter {
 // answers as sudo -n without the rule, and `refuse(args)` makes one call fail
 // the same way. A group TERM ends the agent in that group unless it is
 // `stubborn`; a group KILL ends it unless it is `immortal`. Nothing else is
-// ever signalled.
-export function fakeSudo({ rule = true, refuse = () => false, pty = true, report = true, before = [] } = {}) {
+// ever signalled. `spawnError` (a code such as ENOENT) makes every agent
+// spawn fail as Node reports a missing sudo: no pid, then 'error' and 'close'.
+export function fakeSudo({ rule = true, refuse = () => false, pty = true, report = true, before = [], spawnError } = {}) {
   const calls = [];
   const agents = [];
   let pid = 4000;
   const spawn = (file, args, opts) => {
     const child = new FakeChild(file, args, opts, (pid += 1));
     calls.push(child);
+    if (args[1] === '-H' && spawnError) {
+      child.pid = undefined;
+      agents.push(child);
+      setImmediate(() => {
+        child.alive = false;
+        child.emit('error', Object.assign(new Error(`spawn ${file} ${spawnError}`), { code: spawnError, path: file }));
+        child.stdout.end();
+        child.stderr.end();
+        child.emit('close', -2, null);
+      });
+      return child;
+    }
     if (args[1] === '-H') {
       child.pgid = pty ? child.pid + 50000 : child.pid;
       agents.push(child);

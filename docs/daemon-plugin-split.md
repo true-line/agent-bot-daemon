@@ -1131,9 +1131,11 @@ installs once at provisioning. HQ is not root and gets no other privilege.
   itself; at worst that points HQ's signals at another group of the same
   account, which the agent could already signal. If stop comes before the
   marker, HQ waits for the marker or the exit, up to five seconds, and then
-  falls back to sudo's pid. Stop closes the agent's stdin and, as the
-  harness account through the same rule, sends `kill -TERM -<pgid>`, then
-  `kill -KILL -<pgid>` after a grace period. An agent that exits on its own
+  falls back to sudo's pid. The first signal fixes the group: TERM and KILL
+  go to the same one, and a marker that arrives later is ordinary stderr.
+  Stop closes the agent's stdin and, as the harness account through the
+  same rule, sends `kill -TERM -<pgid>`, then `kill -KILL -<pgid>` after a
+  grace period. An agent that exits on its own
   gets the same KILL to its group. Nothing else is signalled.
 - **What that does not stop.** A process that leaves the launch's group
   (setsid, or a group of its own) is not stopped by HQ and keeps running in
@@ -1150,10 +1152,18 @@ installs once at provisioning. HQ is not root and gets no other privilege.
   shows it, the `hq.launch.exited` receipt says `contained: false`, and the
   log names the process group and tells the owner to check it and the rule.
   Launches live in memory, so an HQ restart clears it. Every normal exit
-  receipt says `contained: true`.
+  receipt says `contained: true`. If sudo cannot be run at all, nothing
+  started: no signal is sent, the slot is freed, the receipt says
+  `reason: 'spawn-failed'` with the error code in `spawn_error` (and
+  `contained: true`, since nothing is left running). When sudo is missing
+  or not executable, launch in that account is then unavailable until HQ
+  restarts; any other spawn error fails that launch only.
+- **The agent's token stays out of the log.** Agent stderr reaches HQ's
+  log clipped and rate limited, and the token HQ passed the agent is
+  replaced by `[redacted]` first, including when a long line is cut.
 - **Verified, never repaired.** At start HQ checks each harness account's
   home from its passwd entry: a directory, not a symlink, owned by the
-  account, with no group or other bits, since it holds the harness's sign-in
+  account, with mode exactly 0700, since it holds the harness's sign-in
   and its agents' working state. A bad home refuses the start, as a bad
   endpoint layout does in 16a. HQ also asks sudo once per account whether
   the rule covers it. Without the rule HQ still starts and serves 16a,

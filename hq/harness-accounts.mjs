@@ -92,7 +92,9 @@ function checkHome(account, info, lstat) {
   try { st = lstat(home); } catch { throw new Error(`home ${home} of harness account ${account} does not exist; the provisioner creates it`); }
   if (st.isSymbolicLink() || !st.isDirectory()) throw new Error(`home ${home} of harness account ${account} is not a directory`);
   if (st.uid !== info.uid) throw new Error(`home ${home} is owned by uid ${st.uid}, not ${account} (${info.uid})`);
-  if (st.mode & 0o077) throw new Error(`home ${home} has mode ${(st.mode & 0o777).toString(8)}; it holds the harness's sign-in and its agents' working state and must be 0700`);
+  // Exactly 0700: no group or other bits, the owner's full access (the launch
+  // shell makes the agent's directory in it), and no setuid, setgid or sticky bit.
+  if ((st.mode & 0o7777) !== 0o700) throw new Error(`home ${home} has mode ${(st.mode & 0o7777).toString(8).padStart(4, '0')}; it holds the harness's sign-in and its agents' working state and must be 0700`);
   return home;
 }
 
