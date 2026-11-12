@@ -81,6 +81,8 @@ export const HOST_CODES = Object.freeze([
   'host.invalid_request',
   'host.secret_in_env',
   'host.context_revoked',
+  'host.launch_unavailable',
+  'host.launch_busy',
   'host.internal',
 ]);
 

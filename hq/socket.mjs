@@ -7,8 +7,8 @@
 //
 // Access control. The three sockets in HQ's state directory are Unix domain
 // sockets created 0600 in a 0700 directory, so only HQ's own OS account can
-// connect. A member account's own broker endpoint lives outside it, where the
-// file system admits that account alone (hq/members.mjs, §9 row 16a). Node has no
+// connect. A harness account's own broker endpoint lives outside it, where the
+// file system admits that account alone (hq/harness-accounts.mjs, §9 row 16a). Node has no
 // peer-credential API (getpeereid / SO_PEERCRED), so the skeleton relies on
 // the file mode. That is exact while HQ runs in the owner's account, which is
 // the interim layout (D4's stated risk; plan §10.3 HQ-RISK-07). When HQ moves
@@ -25,6 +25,17 @@
 // common/v1 error response. A host code has no registry entry, so it goes in
 // `host_refusal` and never in a contract record. soul-contracts does not yet
 // specify the hq/v1 request envelope; this framing is HQ's until it does.
+//
+// Takeover (§9 row 16b). A listener created with `takeover: true` (only the
+// admission socket) lets the FIRST request on a connection hand the
+// connection over: dispatch returns takeover(result, { open, cancel }), the
+// socket answers with `result`, and from then on the bytes are no longer
+// parsed as requests. The first request on such a listener runs alone, and
+// HQ honours the takeover only if not one byte followed its line by then;
+// otherwise it calls `cancel`, refuses and closes, so no byte is ever both a
+// request and a payload. Dispatch sees `takeover: true` in its meta on the
+// one request that may do it. On any other listener a takeover result is an
+// internal error and is cancelled.
 import { connect as netConnect, createServer } from 'node:net';
 import { chmodSync, existsSync, lstatSync, unlinkSync } from 'node:fs';
 import { HostError, REGISTRY_CODES } from '../sdk/errors.mjs';
@@ -39,6 +50,17 @@ const clip = (s) => {
   const text = String(s ?? '').trim() || 'refused';
   return text.length > 512 ? `${text.slice(0, 509)}...` : text;
 };
+
+// A dispatch result that takes the connection over. `open()` runs once the
+// socket has checked the connection is clean; it may throw a refusal, and
+// returns connect(socket), called after the answer is written. `cancel()`
+// runs instead when the takeover is not honoured.
+const TAKEOVER = Symbol('hq.socket.takeover');
+export function takeover(result, { open, cancel }) {
+  if (typeof open !== 'function' || typeof cancel !== 'function') throw new TypeError('takeover needs open and cancel');
+  return { [TAKEOVER]: { result, open, cancel } };
+}
+const takeoverOf = (r) => (r && typeof r === 'object' && TAKEOVER in r ? r[TAKEOVER] : undefined);
 
 // Is something listening on `path`? Used to tell a stale socket file from a
 // running HQ before replacing it.
@@ -60,8 +82,9 @@ export function checkSocketPath(path, platform = process.platform) {
 }
 
 // `mode` is the socket file's mode: 0600 for HQ's own sockets, 0660 for a
-// member endpoint whose directory gives it the member's group (hq/members.mjs).
-export async function listenSocket({ path, auth, dispatch, core, newSession, endSession, mode = 0o600 }) {
+// harness endpoint whose directory gives it the account's group (hq/harness-accounts.mjs).
+// `takeover` enables the hook above for this listener.
+export async function listenSocket({ path, auth, dispatch, core, newSession, endSession, mode = 0o600, takeover: canTakeOver = false }) {
   if (process.platform === 'win32') throw new Error('HQ on Windows needs a named pipe with an owner DACL, which is not built yet (#89)');
   checkSocketPath(path);
   if (existsSync(path)) {
@@ -89,7 +112,8 @@ export async function listenSocket({ path, auth, dispatch, core, newSession, end
     return { id, ok: false, host_refusal: { code: 'host.internal', explanation: `internal error; the HQ log has correlation ${correlation}`, correlation_id: correlation } };
   }
 
-  async function handle(line, session) {
+  // `offer`: this request may take the connection over.
+  async function handle(line, session, offer = false) {
     let req;
     try {
       req = parseStrict(line);
@@ -102,7 +126,14 @@ export async function listenSocket({ path, auth, dispatch, core, newSession, end
     if (extra.length) return respondError(new HostError('host.invalid_request', `unknown request field ${extra[0]}`), id);
     if (typeof req.op !== 'string') return respondError(new HostError('host.invalid_request', 'a request names its op'), id);
     try {
-      const result = await dispatch(req.op, { auth, payload: req.payload, session });
+      const result = await dispatch(req.op, { auth, payload: req.payload, session, ...(offer ? { takeover: true } : {}) });
+      const t = takeoverOf(result);
+      if (t) {
+        if (offer) return { id, takeover: t };
+        try { t.cancel(); } catch { /* the refusal below is the answer */ }
+        if (!canTakeOver) throw new Error(`${req.op} tried to take over a ${auth} connection`);
+        return respondError(new HostError('host.invalid_request', `${req.op} must be the first and only request on a new connection`), id, req.op);
+      }
       return { id, ok: true, result: result === undefined ? null : result };
     } catch (e) {
       return respondError(e, id, req.op, req.payload);
@@ -112,34 +143,78 @@ export async function listenSocket({ path, auth, dispatch, core, newSession, end
   const server = createServer((socket) => {
     conns.add(socket);
     const session = newSession();
-    let buf = '';
+    // Bytes, not text: a takeover hands the rest of the stream on unchanged.
+    // Lines split on 0x0a, which never occurs inside a UTF-8 sequence.
+    let buf = Buffer.alloc(0);
     let queue = Promise.resolve();
+    let lines = 0;
+    let first = false; // the first request of a takeover listener is in flight
+    let taken = false;
     const send = (obj) => { if (!socket.destroyed) socket.write(`${JSON.stringify(obj)}\n`); };
-    socket.setEncoding('utf8');
-    socket.on('data', (chunk) => {
-      buf += chunk;
-      if (Buffer.byteLength(buf) > MAX_LINE_BYTES && !buf.includes('\n')) {
-        send(respondError(new HostError('host.invalid_request', `request line exceeds ${MAX_LINE_BYTES} bytes`), null));
+    const oversize = () => {
+      send(respondError(new HostError('host.invalid_request', `request line exceeds ${MAX_LINE_BYTES} bytes`), null));
+      socket.end();
+      buf = Buffer.alloc(0);
+    };
+
+    function takeOver(id, t) {
+      taken = true;
+      // Closed, already refused (an oversized buffer ends the socket), or
+      // bytes after the request: not honoured.
+      if (socket.destroyed || socket.writableEnded || buf.length) {
+        try { t.cancel(); } catch { /* refused either way */ }
+        send(respondError(new HostError('host.invalid_request', 'bytes followed the request before its answer; send nothing until HQ answers'), id));
         socket.end();
-        buf = '';
         return;
       }
+      let connect;
+      try {
+        connect = t.open();
+      } catch (e) {
+        send(respondError(e, id));
+        socket.end();
+        return;
+      }
+      // Same tick: no data event can fall between the parser and the new owner.
+      socket.off('data', onData);
+      send({ id, ok: true, result: t.result === undefined ? null : t.result });
+      connect(socket);
+    }
+
+    function pump() {
+      if (taken) return;
+      if (first) {
+        if (buf.length > MAX_LINE_BYTES) oversize();
+        return;
+      }
+      if (buf.length > MAX_LINE_BYTES && !buf.includes(0x0a)) { oversize(); return; }
       let nl;
-      while ((nl = buf.indexOf('\n')) !== -1) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        if (!line.trim()) continue;
+      while ((nl = buf.indexOf(0x0a)) !== -1) {
+        const raw = buf.subarray(0, nl);
+        buf = buf.subarray(nl + 1);
         // A line and its newline can arrive in one chunk, so the limit is
         // checked on every line, not only on an unterminated buffer.
-        if (Buffer.byteLength(line) > MAX_LINE_BYTES) {
-          send(respondError(new HostError('host.invalid_request', `request line exceeds ${MAX_LINE_BYTES} bytes`), null));
-          socket.end();
-          buf = '';
+        if (raw.length > MAX_LINE_BYTES) { oversize(); return; }
+        const line = raw.toString('utf8');
+        if (!line.trim()) continue;
+        if (canTakeOver && lines++ === 0) {
+          // The first request runs alone; the rest of the buffer waits for it.
+          first = true;
+          queue = queue.then(() => handle(line, session, true)).then((out) => {
+            first = false;
+            if (out?.takeover) takeOver(out.id, out.takeover);
+            else { send(out); pump(); }
+          }, (e) => { first = false; send(respondError(e, null)); pump(); });
           return;
         }
         queue = queue.then(() => handle(line, session)).then(send, (e) => send(respondError(e, null)));
       }
-    });
+    }
+    function onData(chunk) {
+      buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
+      pump();
+    }
+    socket.on('data', onData);
     socket.on('error', () => {});
     // The session ends after its queued requests finish, so a request still
     // in flight (a broker bind, say) cannot recreate state after the end.

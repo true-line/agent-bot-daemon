@@ -20,7 +20,8 @@ node hq/main.mjs souls    # admitted Souls and their runtimes
 | Durable store: the SDK's tables, blobs and receipts, written atomically to `store.json` (0600) in a 0700 directory. It refuses a wider directory and never overwrites a store it cannot read. | `store.mjs` | §3.2, §4.3 |
 | Control socket (owner), admission socket (entry points) and member broker socket. The auth class is the socket, never a client field. Strict NDJSON. Registry refusals are common/v1 error responses; host refusals go in a separate `host_refusal` field. | `socket.mjs` | §7.1, §7.2 |
 | Member broker socket ([§9 row 13b](../docs/daemon-plugin-split.md#49-the-member-broker-socket-stage-1)): `broker.sock`, whose frames go to the one plugin serving the broker (`ctx.broker.serve`). It binds a connection with `bind { runtime_id, channel_binding }` through hq-admission's `verifyBinding` and delivers later frames with `ctx.broker.deliver`; consumers authorize by the bound runtime. agent-comms ships the broker plugin; HQ alone refuses every frame with `host.no_broker`. | `hq.mjs`, `socket.mjs` | §4.9 |
-| Member accounts ([§9 row 16a](../docs/daemon-plugin-split.md#stage-2a-member-isolation-wp2), Linux): with `members` in the config, each member account gets its own broker endpoint, `<dir>/<account>/broker.sock`, mode 0660 in a 2750 directory of that account's private group, so the file system tells HQ which account is calling. A runtime is bound to its member's account at admission, and that is kept in the store. It then binds only from that account's endpoint and only with a keyed proof: `bind.challenge { runtime_id }` returns a nonce, and `bind { runtime_id, proof }` answers with HMAC-SHA-256 over it, keyed with the channel binding, which is never sent. Anything else is `caller_mismatch`. HQ verifies the directory layout and refuses to start on any other; the provisioner makes it. | `members.mjs`, `admission.mjs`, `hq.mjs` | §9 row 16a |
+| Harness accounts ([§9 row 16a](../docs/daemon-plugin-split.md#stage-2a-member-isolation-wp2), Linux; D7 as amended by platform PDR-0053): with `harnesses` in the config, each harness account gets its own broker endpoint, `<dir>/<account>/broker.sock`, mode 0660 in a 2750 directory of that account's private group, so the file system tells HQ which account is calling. Accounts are keyed by adapter ID and shared by the agents of every Soul on that harness; several adapters may name one account, which then has one endpoint. A runtime is bound at admission to the account of its role's adapter, and that is kept in the store. It then binds only from that account's endpoint and only with a keyed proof: `bind.challenge { runtime_id }` returns a nonce, and `bind { runtime_id, proof }` answers with HMAC-SHA-256 over it, keyed with the channel binding, which is never sent. Anything else is `caller_mismatch`. The endpoint proves the account, the harness credential; two agents in one account are told apart only by the proof, and are one trust domain to the host. A role whose adapter has no account stays on the shared socket. HQ verifies the directory layout and refuses to start on any other; the provisioner makes it. | `harness-accounts.mjs`, `admission.mjs`, `hq.mjs` | §9 row 16a |
+| Agent launch ([§9 row 16b](../docs/daemon-plugin-split.md#stage-2a-member-isolation-wp2), Linux): HQ starts an agent in its harness account, as its parent, through the sudoers rule agent-bot-machine installs, in one fixed form: `sudo -n -H -u <account> -- /bin/sh -c '<shell>' sh <soul_id> <member_id> <command>`, where the fixed shell creates `$HOME/.agent-bot-hq/souls/<soul_id>/<member_id>/` at 0700 as that account and starts the command there; the IDs and the command are arguments, never part of the script. The child gets only the four `AGENT_BOT_SOULS_*` variables a request may set, `AGENT_BOT_SOULS_BROKER` set by HQ to the account's own endpoint, and a fixed `PATH`. On the admission socket, the connection that owns the runtime sends `launch { runtime_id, command, env }` and gets a launch ID and a one-time token (30 seconds); `launch.attach { launch_id, attach }`, the first and only request on a new connection, starts the agent and makes that connection its stdin and stdout. One launch runs per Soul and agent. sudo runs detached. Before the agent starts, the fixed shell reads its own process group from `/proc/self/stat` and prints `agent-bot-hq-launch pgid <n>` on stderr; HQ takes the first such line as the launch's group and does not log it (no marker within five seconds of a stop: sudo's pid). `launch.stop { launch_id }`, a closed connection and HQ's own stop close the agent's stdin and send `kill -TERM -<pgid>`, then `kill -KILL -<pgid>` after a grace period, as the account; an agent that exits on its own gets the KILL to its group. Nothing else is signalled: a process that leaves its group (setsid, or a group of its own) is not stopped by HQ and keeps running in the harness account, whose agents are one trust domain; containing it needs a cgroup and so root. A failed signal, or sudo still running after the KILL, leaves the launch `uncontained`: its slot is held until HQ restarts and its receipt says `contained: false`. Account homes are verified at start (a directory owned by the account, 0700); a bad one refuses the start. HQ asks sudo once per account whether the rule covers it; without it HQ serves row 16a and refuses launch for that account. `status` lists launches and each account's readiness, never commands or environments; receipts `hq.launch`, `hq.launch.refused` and `hq.launch.exited` carry a digest of the command, never the environment or the token. Agent stderr goes to HQ's log, clipped and rate limited. | `launch.mjs`, `harness-accounts.mjs`, `socket.mjs`, `hq.mjs` | §9 row 16b |
 | Owner sessions: one per control connection, recorded in the store and closed on disconnect or at the next start. | `hq.mjs` | §7.2 |
 | Profile reporting: the profile in force, with the reasons a stronger one is not. Never `managed-protected` before §9 PR 16. | `profile.mjs` | §3.3, R8 |
 | Task service ([§9 PR 13](../docs/daemon-plugin-split.md#stage-1-local-vertical-slice-wp2wp4), #40): `task/v1` records in the store, the `task-v1` provider (platform PDR-0024). Members commit through `task.commit` with their runtime, over the admission connection or brokered with their bound runtime; only the task Soul's current lead at the current epoch and lease commits, and a specialist's request is recorded as a proposal (T20). CAS on the expected revision (`revision_conflict`), one commit per operation ID with the stored receipt for an exact repeat (T05), write-scope exclusion (`write_scope_conflict`, unless listed in `concurrentWriters`), and offers whose requester is their authenticated source (T04). The owner offers a task with `tasks.offer` and reads `tasks.list` and `tasks.get`. A bound member reads its Soul's waiting directives with the `task.directives` kind, each a wire/v1 directive-or-query record for a task the owner or HQ offered, and one of its Soul's tasks with `task.get`. A peer's offer is never a directive. | `tasks.mjs` | §4.2, 0.4 §7 |
@@ -80,13 +81,24 @@ under the `software` backend only, its key file. With `enrollment.source`
 re-enrollment replaced, and the pinned response-signing key. None of those
 is a secret.
 
+`harnesses` (Linux only) gives each harness its OS account, one per harness
+credential ([platform PDR-0053](https://github.com/true-line/agent-bot-platform/blob/main/docs/04-decisions/PDR-0053-soul-life-and-agent-replace-member.md)):
+`{ "dir": "/run/agent-bot-hq/members", "accounts": { "<adapter ID>": "<account>" } }`.
+The default directory's name predates PDR-0053. The 16a key `members` is
+refused. An agent's working state is in its own directory in its harness
+account's home, outside this directory, and an agent HQ starts there can
+read nothing in this directory, connect to none of its sockets, and run none
+of HQ's tooling against it (T02, run in CI on two throwaway accounts).
+Launches are in memory only: after a restart nothing runs under HQ.
+
 ## Interim account: D4's stated risk
 
 D6 puts HQ in its own account (`_agent-bot-hq` on macOS, `agent-bot-hq` on
 Linux), which agent-bot-machine creates in its S6 slice. Until that account
 exists, HQ runs in the owner's `user` account. D4's stated residual risk
-then covers HQ too: any process in `user`, members included, can read HQ's
-store and connect to every socket. The file mode is the only access check,
+then covers HQ too: any process in `user` can read HQ's store and connect
+to every socket, and so can every agent that runs in `user`, which is
+every agent unless HQ starts it in a harness account (row 16b). The file mode is the only access check,
 because Node has no peer-credential API. HQ reports `managed-cooperative`
 and names the account as a reason. The skeleton holds no credentials and no
 grants. Under the default `software` signer backend it does hold one secret:
@@ -99,13 +111,24 @@ peer-credential check and a service unit, is #88.
 
 ## Not in this slice
 
-- The rest of the Linux protected profile (§9 rows 16b to 16d). Row 16a
-  makes HQ tell member accounts apart; it does not create the accounts,
-  start members under them, close HQ's own state to them, or block their
-  network. HQ still reports `managed-cooperative`, with members sharing one
-  account as a stated reason, until 16b. The agent-comms broker plugin
+- The rest of the Linux protected profile (§9 rows 16c and 16d). Rows 16a
+  and 16b make HQ tell harness accounts apart and start agents in them; HQ
+  does not create the accounts or install the sudoers rule (that is
+  agent-bot-machine's), and it does not block their network (16c). HQ
+  still reports `managed-cooperative`. Without `harnesses` the reason is
+  that agents of every harness share one account; with it, the reasons name
+  any admitted agent whose harness has no account and any account HQ cannot
+  launch in. HQ's own account, the qualification and a hardware key remain
+  stated reasons. The Soul entry point in agent-bot-souls does not start
+  agents through HQ yet; an agent's working directory is not captured into
+  its Soul's package; a launched agent is not stopped when its runtime's
+  lease expires or is superseded; HQ does not clean up after a crash, so an
+  agent left by a crashed HQ runs on until the owner ends it; and a process
+  that leaves its launch's group is not stopped by HQ (containing it needs a
+  cgroup, which needs root).
+  The agent-comms broker plugin
   ([agent-bot-comms#312](https://github.com/true-line/agent-bot-comms/pull/312))
-  and the Soul member
+  and the Soul runtime
   ([agent-bot-souls#3](https://github.com/true-line/agent-bot-souls/pull/3))
   bind by the challenge. Nothing creates the endpoint directories yet; that
   is agent-bot-machine's.
