@@ -18,13 +18,19 @@
 //   control.sock    hq/v1 for the owner, 0600
 //   admission.sock  hq/v1 for Soul entry points, 0600
 //   broker.sock     member broker frames, served by one plugin (§4.9), 0600
-// A member account's own endpoint is outside this directory (hq/members.mjs).
+// A harness account's own endpoint is outside this directory
+// (hq/harness-accounts.mjs), and so is its agents' working state, in the
+// account's 0700 home. With harness accounts on Linux, HQ starts agents in
+// them (hq/launch.mjs, §9 row 16b) and nothing in this directory is open to
+// them.
 //
 // Interim account (D4's stated risk, plan §10.3 HQ-RISK-07): until
 // agent-bot-machine provisions _agent-bot-hq (D6, its S6 slice), HQ runs in
-// the owner's `user` account, so any process there, members included, can
-// read the store and connect to every socket. HQ reports managed-cooperative
-// and says why; the skeleton holds no credentials and no grants.
+// the owner's `user` account, so any process there, agents that run there
+// included, can read the store and connect to every socket. An agent HQ
+// starts in its harness account (row 16b) is not in `user`. HQ reports
+// managed-cooperative and says why; the skeleton holds no credentials and no
+// grants.
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { userInfo } from 'node:os';
@@ -38,13 +44,14 @@ import { legacyDaemon, legacySigner } from './legacy.mjs';
 import { detectProfile } from './profile.mjs';
 import { backendFromConfig, createSigner, validateSignerConfig } from './signer.mjs';
 import { createEnrollment, validateEnrollmentConfig } from './enrollment.mjs';
+import { createLauncher, LAUNCH_OPERATIONS } from './launch.mjs';
 import { loadPlugins } from './plugins.mjs';
 import { checkSocketPath, listenSocket } from './socket.mjs';
-import { checkMemberSocket, planMemberEndpoints, validateMembersConfig } from './members.mjs';
+import { checkHarnessSocket, planHarnessEndpoints, validateHarnessesConfig } from './harness-accounts.mjs';
 import { coreTable, CORE_PLUGIN, ensurePrivateDir, openStore } from './store.mjs';
 
 export const HQ_VERSION = '0.1.0';
-const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'concurrentWriters', 'legacy', 'signer', 'features', 'enrollment', 'members']);
+const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'concurrentWriters', 'legacy', 'signer', 'features', 'enrollment', 'harnesses']);
 const FEATURE_KEYS = new Set(['hardwareSigner']);
 const LEGACY_KEYS = new Set(['supervise', 'probeIntervalMs']);
 const DEFAULT_PROBE_MS = 30_000;
@@ -70,6 +77,9 @@ export function readConfig(home, { uid = process.getuid?.() } = {}) {
 
 export function validateConfig(c) {
   if (!c || typeof c !== 'object' || Array.isArray(c)) throw new Error('HQ config is a JSON object');
+  // `members` (row 16a, keyed by Soul and member) was replaced before any
+  // release by `harnesses`, keyed by adapter (platform PDR-0053).
+  if (Object.hasOwn(c, 'members')) throw new Error('HQ config: unknown key members; accounts are now configured per harness, as harnesses: { dir?, accounts: { <adapter_id>: <account> } } (platform PDR-0053)');
   for (const k of Object.keys(c)) if (!CONFIG_KEYS.has(k)) throw new Error(`HQ config: unknown key ${k}`);
   if (c.standalone !== undefined && typeof c.standalone !== 'boolean') throw new Error('HQ config: standalone is a boolean');
   if (c.leaseTtlMs !== undefined && !(Number.isSafeInteger(c.leaseTtlMs) && c.leaseTtlMs >= 1000)) throw new Error('HQ config: leaseTtlMs is an integer of at least 1000');
@@ -96,7 +106,7 @@ export function validateConfig(c) {
     }
   }
   if (c.enrollment !== undefined) validateEnrollmentConfig(c.enrollment);
-  if (c.members !== undefined) validateMembersConfig(c.members);
+  if (c.harnesses !== undefined) validateHarnessesConfig(c.harnesses);
   if (c.signer !== undefined) {
     validateSignerConfig(c.signer);
     if (c.signer.backend === 'helper' && c.features?.hardwareSigner !== true) {
@@ -125,8 +135,11 @@ export function createHQ({
   platform = process.platform,
   account = userInfo().username,
   uid = process.getuid?.(),
-  accounts,                      // how a member account name resolves to { uid, gid, groupMembers }
-                                 // (hq/members.mjs resolveAccount by default)
+  accounts,                      // how a harness account name resolves to { uid, gid, groupMembers, home }
+                                 // (hq/harness-accounts.mjs resolveAccount by default)
+  harnessLstat,                  // how harness account paths are inspected (lstatSync by default; tests
+                                 // stand in another owner for an account's home)
+  launch = {},                   // the agent launcher's spawn, timers and graceMs (hq/launch.mjs defaults)
   plugins = [],                  // plugin objects (tests); installed ones come from pluginsDir
   pluginsDir,                    // installed plugins, each checked against `pins` (§4.5)
   pins = { plugins: [] },        // governance/plugins.json
@@ -147,11 +160,14 @@ export function createHQ({
   let running = false;
   let firstTick = Promise.resolve();
   let pluginLoad = [];
-  // Member accounts (§9 row 16a): the endpoints HQ opens, and which account
-  // each live broker connection arrived from. A connection on the shared
-  // broker socket has no entry.
-  let memberPlan = { endpoints: [], accountOf: () => undefined };
+  // Harness accounts (§9 row 16a): the endpoints HQ opens, one per account,
+  // and which account each live broker connection arrived from. A
+  // connection on the shared broker socket has no entry.
+  let harnessPlan = { endpoints: [], accountOf: () => undefined };
   const brokerCallers = new Map();
+  // Agent launch (§9 row 16b) and what the profile reasons say about it.
+  let launcher;
+  let profileReasons = () => [];
 
   const paths = { home, control: join(home, 'control.sock'), admission: join(home, 'admission.sock'), broker: join(home, 'broker.sock') };
 
@@ -206,10 +222,10 @@ export function createHQ({
     profileInfo = detectProfile({ platform, account, standalone: cfg.standalone === true, keyStorage: signerReport()?.key_storage });
     legacyRunner ??= legacyDaemon({ supervise: cfg.legacy?.supervise === true, clock });
 
-    memberPlan = cfg.members
-      ? planMemberEndpoints(cfg.members, { hqUid: uid, platform, ...(accounts ? { resolve: accounts } : {}) })
+    harnessPlan = cfg.harnesses
+      ? planHarnessEndpoints(cfg.harnesses, { hqUid: uid, platform, ...(accounts ? { resolve: accounts } : {}), ...(harnessLstat ? { lstat: harnessLstat } : {}) })
       : { endpoints: [], accountOf: () => undefined };
-    if (platform !== 'win32') for (const p of [paths.control, paths.admission, paths.broker, ...memberPlan.endpoints.map((e) => e.path)]) checkSocketPath(p, platform);
+    if (platform !== 'win32') for (const p of [paths.control, paths.admission, paths.broker, ...harnessPlan.endpoints.map((e) => e.path)]) checkSocketPath(p, platform);
     store = openStore(home, { uid });
     core = createCore({
       clock, random, signer,
@@ -222,6 +238,39 @@ export function createHQ({
       },
     });
     store.load(core);
+    launcher = createLauncher({
+      ...launch,
+      core, harnesses: harnessPlan, configured: Boolean(cfg.harnesses), platform,
+      mode: () => host?.mode ?? 'starting',
+      withLiveRuntime: (runtimeId, caller, fn) => {
+        const admission = host.provided('hq-admission');
+        if (!admission) fail('host.plugin_degraded', 'hq-admission is not running');
+        return admission.withLiveRuntime(runtimeId, caller, fn);
+      },
+    });
+    // Whether the provisioner's rule lets HQ start each harness account;
+    // bounded, and a missing rule leaves HQ serving row 16a.
+    await launcher.probe();
+    // The profile in force is fixed at start; its reasons follow what is
+    // admitted. They name an admitted agent whose harness has no account, or
+    // an account HQ cannot launch in. `pending` are the roles a Hello is
+    // admitting and `unbound` the other live runtimes without an account,
+    // both from hq-admission; with no `unbound`, HQ asks hq-admission for its
+    // own (status). This states gaps only: it adds no claim of protection.
+    const harnessAccounts = (pending = [], unbound) => {
+      if (!cfg.harnesses) return false;
+      const unready = launcher.accounts().filter((a) => !a.available);
+      // The list is bounded and the tag appended after it, so "(D7)", which
+      // profileWarning looks for, always survives.
+      const bound = (text) => (text.length > 360 ? `${text.slice(0, 357)}...` : text);
+      if (unready.length) return `${bound(`harness launch is not available for ${unready.map((a) => `${a.account} (${a.reason})`).join('; ')}`)}, so HQ cannot start agents in those accounts (D7)`;
+      const others = unbound ?? host?.provided('hq-admission')?.unboundRuntimes() ?? [];
+      const without = [...new Set([...pending.filter((p) => !harnessPlan.accountOf(p.adapter_id)), ...others]
+        .map((p) => `${p.soul_id}/${p.member_id} (adapter ${p.adapter_id ?? 'unknown'})`))];
+      if (without.length) return `${bound(`agents whose harness has no account of its own: ${without.slice(0, 5).join(', ')}${without.length > 5 ? ` and ${without.length - 5} more` : ''}`)} (D7)`;
+      return true;
+    };
+    profileReasons = (pending, unbound) => detectProfile({ platform, account, standalone: cfg.standalone === true, keyStorage: signerReport()?.key_storage, harnessAccounts: harnessAccounts(pending, unbound) }).reasons;
     // Sessions left open by a crash are closed now; they cannot be live.
     for (const [id, s] of coreTable(core, 'sessions')) if (!s.closed_at) coreTable(core, 'sessions').set(id, { ...s, closed_at: clock.now(), closed_by: 'restart' });
 
@@ -230,8 +279,8 @@ export function createHQ({
     // receipt say why.
     const admission = admissionPlugin({
       schemas,
-      profileReasons: () => profileInfo.reasons,
-      memberAccount: (soul, member) => memberPlan.accountOf(soul, member),
+      profileReasons: (pending, unbound) => profileReasons(pending, unbound),
+      harnessAccount: (adapterId) => harnessPlan.accountOf(adapterId),
       callerOf: (connection) => brokerCallers.get(connection),
     });
     const builtIn = [admission, tasksPlugin({ schemas }), ...plugins];
@@ -261,12 +310,13 @@ export function createHQ({
         hq: {
           version: HQ_VERSION,
           account,
-          profileReasons: profileInfo.reasons,
+          profileReasons: profileReasons(),
           sockets: {
             control: paths.control, admission: paths.admission, broker: paths.broker,
             access: 'file mode 0600 in a 0700 directory (no peer-credential check yet)',
-            ...(memberPlan.endpoints.length ? { members: memberPlan.endpoints.map((e) => ({ account: e.account, path: e.path })), memberAccess: 'one endpoint per member account, mode 0660 in a 2750 directory of the member\'s private group' } : {}),
+            ...(harnessPlan.endpoints.length ? { harnesses: harnessPlan.endpoints.map((e) => ({ account: e.account, adapters: e.adapters, path: e.path })), harnessAccess: 'one endpoint per harness account, mode 0660 in a 2750 directory of the account\'s private group; it identifies the account, not one agent in it' } : {}),
           },
+          launch: launcher.report(),
           ownerSessions: openOwnerSessions(),
           pluginLoad,
           ...(signerReport() ? { signer: signerReport() } : {}),
@@ -282,7 +332,13 @@ export function createHQ({
     try {
       sockets = [
         await listenSocket({ path: paths.control, auth: 'owner', dispatch: host.dispatch, core, newSession: openSession, endSession: closeSession }),
-        await listenSocket({ path: paths.admission, auth: 'entry-point', dispatch: host.dispatch, core, newSession: () => `ep_${random.hex(12)}`, endSession: () => {} }),
+        // Agent launch is HQ core's own framing on this socket (hq/launch.mjs);
+        // launch.attach takes its connection over, so only this listener allows it.
+        await listenSocket({
+          path: paths.admission, auth: 'entry-point', core, takeover: true,
+          dispatch: (op, meta) => (LAUNCH_OPERATIONS.includes(op) ? launcher.dispatch(op, meta) : host.dispatch(op, meta)),
+          newSession: () => `ep_${random.hex(12)}`, endSession: () => {},
+        }),
         // Each frame goes to the plugin serving the broker; `op` is the kind.
         await listenSocket({
           path: paths.broker, auth: 'member', core,
@@ -291,9 +347,9 @@ export function createHQ({
           endSession: (connection) => { host.brokerClosed(connection); },
         }),
       ];
-      // One endpoint per member account. The account is recorded before the
+      // One endpoint per harness account. The account is recorded before the
       // connection's first frame and dropped when it closes.
-      for (const endpoint of memberPlan.endpoints) {
+      for (const endpoint of harnessPlan.endpoints) {
         sockets.push(await listenSocket({
           path: endpoint.path, auth: 'member', core, mode: 0o660,
           dispatch: (kind, { payload, session }) => host.brokerAccept(kind, payload, { connection: session }),
@@ -304,7 +360,7 @@ export function createHQ({
           },
           endSession: (connection) => { brokerCallers.delete(connection); host.brokerClosed(connection); },
         }));
-        checkMemberSocket(endpoint);
+        checkHarnessSocket(endpoint);
       }
     } catch (e) {
       for (const s of sockets) await s.close();
@@ -328,6 +384,9 @@ export function createHQ({
     running = false;
     clearInterval(timer);
     await firstTick;
+    // Agents first, while their connections are still open: each launch's
+    // process group is stopped (hq/launch.mjs).
+    await launcher.stopAll();
     for (const s of sockets) await s.close();
     sockets = [];
     const report = await host.stop({ reason });

@@ -1,13 +1,14 @@
-// T01 on real OS accounts (plan §9 row 16a). The CI job creates two member
+// T01 on real OS accounts (plan §9 row 16a). The CI job creates two harness
 // accounts and their endpoint directories, as the provisioner would; this
-// test runs HQ as the job's own account and the member side as each member
-// account, through sudo. It is the proof the logic tests cannot give: the
-// kernel refuses one member at another's endpoint, and HQ refuses a copied
-// binding from the right kind of endpoint.
+// test runs HQ as the job's own account and the agent side as each harness
+// account, through sudo. The lead's adapter is mapped to the first account
+// and the specialist's to the second. It is the proof the logic tests cannot
+// give: the kernel refuses one account at another's endpoint, and HQ refuses
+// a copied binding from the right kind of endpoint.
 //
-//   HQ_MEMBER_DIR       the members directory
-//   HQ_MEMBER_ACCOUNTS  two account names, comma-separated
-//   HQ_REQUIRE_MEMBER_ACCOUNTS=1  fail instead of skipping when unset (CI)
+//   HQ_HARNESS_DIR       the harness endpoint directory
+//   HQ_HARNESS_ACCOUNTS  two account names, comma-separated
+//   HQ_REQUIRE_HARNESS_ACCOUNTS=1  fail instead of skipping when unset (CI)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
@@ -15,39 +16,39 @@ import { chmodSync, copyFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { referenceBroker } from './broker-fixture.mjs';
-import { DIGEST, hello, SOUL, startHQ } from './hq-harness.mjs';
+import { DIGEST, helloOn, SOUL, startHQ } from './hq-harness.mjs';
 
-const dir = process.env.HQ_MEMBER_DIR;
-const [A, B] = (process.env.HQ_MEMBER_ACCOUNTS ?? '').split(',').filter(Boolean);
+const dir = process.env.HQ_HARNESS_DIR;
+const [A, B] = (process.env.HQ_HARNESS_ACCOUNTS ?? '').split(',').filter(Boolean);
 const ready = process.platform === 'linux' && dir && A && B;
-if (!ready && process.env.HQ_REQUIRE_MEMBER_ACCOUNTS === '1') {
-  test('member accounts are required here', () => assert.fail('HQ_REQUIRE_MEMBER_ACCOUNTS=1 but HQ_MEMBER_DIR and HQ_MEMBER_ACCOUNTS are not set on Linux'));
+if (!ready && process.env.HQ_REQUIRE_HARNESS_ACCOUNTS === '1') {
+  test('harness accounts are required here', () => assert.fail('HQ_REQUIRE_HARNESS_ACCOUNTS=1 but HQ_HARNESS_DIR and HQ_HARNESS_ACCOUNTS are not set on Linux'));
 }
 
-// Run the standalone member client as `account`. The spawn is asynchronous:
+// Run the standalone broker client as `account`. The spawn is asynchronous:
 // HQ is serving in this process.
 const as = (account, client, input) => new Promise((resolve, reject) => {
   execFile('sudo', ['-n', '-u', account, process.execPath, client, JSON.stringify(input)], { timeout: 20_000 }, (err, stdout, stderr) => {
-    if (err) { reject(new Error(`member client as ${account} failed: ${err.message} ${stderr}`)); return; }
+    if (err) { reject(new Error(`broker client as ${account} failed: ${err.message} ${stderr}`)); return; }
     resolve(JSON.parse(stdout.trim().split('\n').pop()));
   });
 });
 
-test('T01 on real accounts: the kernel and HQ both refuse a member that is not the runtime\'s', { skip: ready ? false : 'needs two member accounts (CI creates them)' }, async () => {
-  // The member accounts cannot read the checkout, so the client goes to /tmp.
+test('T01 on real accounts: the kernel and HQ both refuse an account that is not the runtime\'s', { skip: ready ? false : 'needs two harness accounts (CI creates them)' }, async () => {
+  // The harness accounts cannot read the checkout, so the client goes to /tmp.
   const pub = mkdtempSync('/tmp/hq-member-client-');
   chmodSync(pub, 0o755);
   const client = join(pub, 'member-client.mjs');
   copyFileSync(fileURLToPath(new URL('./member-client.mjs', import.meta.url)), client);
   chmodSync(client, 0o644);
 
-  const config = { acceptedDefinitions: { [SOUL]: [DIGEST] }, members: { dir, accounts: { [SOUL]: { m_lead: A, m_spec: B } } } };
-  let t = await startHQ({ platform: 'linux', config, plugins: [referenceBroker()] });
+  const config = { acceptedDefinitions: { [SOUL]: [DIGEST] }, harnesses: { dir, accounts: { 'adapter-a': A, 'adapter-b': B } } };
+  let t = await startHQ({ platform: 'linux', config, plugins: [referenceBroker()], realSudo: true });
   const { home } = t;
   try {
-    const endpoint = (account) => t.status.hq.sockets.members.find((m) => m.account === account).path;
+    const endpoint = (account) => t.status.hq.sockets.harnesses.find((m) => m.account === account).path;
     const entry = await t.entry();
-    const admitted = (await entry.request('Hello', hello())).result.admitted_runtimes;
+    const admitted = (await entry.request('Hello', helloOn('adapter-a', 'adapter-b'))).result.admitted_runtimes;
     const lead = admitted.find((a) => a.role === 'lead');
     const spec = admitted.find((a) => a.role === 'specialist');
     const bind = (rt, key = rt.channel_binding) => ({ bind: { runtime_id: rt.runtime_id, key } });
@@ -69,7 +70,7 @@ test('T01 on real accounts: the kernel and HQ both refuse a member that is not t
       // A, on its own endpoint, without its runtime's key.
       const keyless = await as(A, client, { path: endpoint(A), steps: [bind(lead, spec.channel_binding)] });
       assert.equal(code(keyless), 'caller_mismatch', JSON.stringify(keyless));
-      // Neither member reaches HQ's own sockets.
+      // Neither account reaches HQ's own sockets.
       for (const account of [A, B]) {
         assert.equal((await as(account, client, { path: t.hq.paths.broker, steps: [] })).connected, false);
         assert.equal((await as(account, client, { path: t.hq.paths.control, steps: [] })).connected, false);
@@ -88,7 +89,7 @@ test('T01 on real accounts: the kernel and HQ both refuse a member that is not t
 
     // Still after a restart, from the store.
     await t.done({ keep: true });
-    t = await startHQ({ home, platform: 'linux', config, plugins: [referenceBroker()] });
+    t = await startHQ({ home, platform: 'linux', config, plugins: [referenceBroker()], realSudo: true });
     await check();
   } finally {
     await t.done();

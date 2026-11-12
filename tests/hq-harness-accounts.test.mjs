@@ -1,56 +1,40 @@
-// Member accounts and their broker endpoints (plan §9 row 16a; T01).
+// Harness accounts and their broker endpoints (plan §9 row 16a; T01; D7 as
+// amended by platform PDR-0053: one OS account per harness credential).
 //
-// These tests run everywhere: the caller's identity is the endpoint a
+// These tests run everywhere: the caller's account is the endpoint a
 // connection arrives on, so two endpoint directories stand in for two
 // accounts and an injected resolver gives them different uids. What they
 // cannot show is the kernel refusing another account at connect; that is
-// tests/hq-member-accounts.test.mjs, on real accounts in CI.
+// tests/hq-harness-accounts-real.test.mjs, on real accounts in CI.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, renameSync, statSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { bindProof } from '../hq/admission.mjs';
 import { validateConfig } from '../hq/hq.mjs';
-import { planMemberEndpoints, resolveAccount, validateMembersConfig } from '../hq/members.mjs';
+import { planHarnessEndpoints, resolveAccount, validateHarnessesConfig } from '../hq/harness-accounts.mjs';
 import { referenceBroker } from './broker-fixture.mjs';
-import { DIGEST, hello, SOUL, startHQ } from './hq-harness.mjs';
+import { DIGEST, fakeSudo, HARNESS_UIDS as UIDS, harnessLayout as layout, hello, helloOn, SOUL, startHQ } from './hq-harness.mjs';
 
 const A = 'hqm_a';
 const B = 'hqm_b';
-const UIDS = { [A]: 61001, [B]: 61002 };
 const hqUid = process.getuid();
 
-// A members directory laid out as the provisioner would, with the group the
-// file system gives this user's own directories.
-function layout(accounts = [A, B]) {
-  const dir = mkdtempSync(join(tmpdir(), 'm-'));
-  chmodSync(dir, 0o755);
-  const gids = {};
-  for (const account of accounts) {
-    const home = join(dir, account);
-    mkdirSync(home);
-    chmodSync(home, 0o2750);
-    gids[account] = statSync(home).gid;
-  }
-  const resolve = (name) => {
-    if (!(name in UIDS)) throw new Error(`member account ${name} does not exist on this host`);
-    return { uid: UIDS[name], gid: gids[name], groupMembers: [] };
-  };
-  return { dir, resolve, gids, remove: () => rmSync(dir, { recursive: true, force: true }) };
-}
-const membersConfig = (dir, accounts = { m_lead: A, m_spec: B }) => ({ dir, accounts: { [SOUL]: accounts } });
+// The lead runs on adapter-a, the specialist on adapter-b (helloOn).
+const harnessesConfig = (dir, accounts = { 'adapter-a': A, 'adapter-b': B }) => ({ dir, accounts });
 
-async function setup({ home, dir, resolve, accounts } = {}) {
+async function setup({ home, dir, resolve, lstat, accounts, roles = ['adapter-a', 'adapter-b'] } = {}) {
   const made = dir ? undefined : layout();
   const t = await startHQ({
     ...(home ? { home } : {}),
     platform: 'linux',
     accounts: resolve ?? made.resolve,
-    config: { acceptedDefinitions: { [SOUL]: [DIGEST] }, members: membersConfig(dir ?? made.dir, accounts) },
+    harnessLstat: lstat ?? made.lstat,
+    launch: { spawn: fakeSudo().spawn },
+    config: { acceptedDefinitions: { [SOUL]: [DIGEST] }, harnesses: harnessesConfig(dir ?? made.dir, accounts) },
     plugins: [referenceBroker()],
   });
-  const endpoint = (account) => t.status.hq.sockets.members.find((m) => m.account === account).path;
+  const endpoint = (account) => t.status.hq.sockets.harnesses.find((m) => m.account === account).path;
   const on = (account) => t.member(account ? endpoint(account) : undefined);
   // The whole bind: HQ's challenge, then the proof keyed with `key`.
   const bind = async (conn, runtimeId, key) => {
@@ -60,7 +44,7 @@ async function setup({ home, dir, resolve, accounts } = {}) {
   };
   const admit = async () => {
     const entry = await t.entry();
-    const r = (await entry.request('Hello', hello())).result;
+    const r = (await entry.request('Hello', helloOn(...roles))).result;
     const rt = (role) => r.admitted_runtimes.find((a) => a.role === role);
     return { lead: rt('lead'), spec: rt('specialist') };
   };
@@ -72,34 +56,44 @@ const refused = (res, code = 'caller_mismatch') => {
   assert.equal(res.refusal?.error ?? res.host_refusal?.code, code, JSON.stringify(res));
 };
 
-test('members config: the shape, one account per member, and nothing off Linux', () => {
-  const ok = { accounts: { [SOUL]: { m_lead: A, m_spec: B } } };
-  assert.equal(validateMembersConfig(ok), ok);
-  assert.doesNotThrow(() => validateConfig({ members: { dir: '/run/x', ...ok } }));
+test('harnesses config: adapter IDs to accounts, shared accounts allowed, the old members key refused, nothing off Linux', () => {
+  const ok = { accounts: { 'adapter-a': A, 'adapter-b': B, 'adapter-c': A } };
+  assert.equal(validateHarnessesConfig(ok), ok);
+  assert.doesNotThrow(() => validateConfig({ harnesses: { dir: '/run/x', ...ok } }));
   for (const [bad, why] of [
-    [null, /members is an object/],
-    [{ accounts: ok.accounts, extra: 1 }, /unknown key members.extra/],
+    [null, /harnesses is an object/],
+    [{ accounts: ok.accounts, extra: 1 }, /unknown key harnesses.extra/],
     [{ dir: 'relative', ...ok }, /absolute path/],
-    [{}, /maps Soul IDs/],
-    [{ accounts: { nope: {} } }, /not a Soul ID/],
-    [{ accounts: { [SOUL]: { 'bad id!': A } } }, /not a member ID/],
-    [{ accounts: { [SOUL]: { m_lead: 'Root User' } } }, /not an account name/],
-    [{ accounts: { [SOUL]: { m_lead: A, m_spec: A } } }, /each member needs its own account/],
-  ]) assert.throws(() => validateMembersConfig(bad), why);
+    [{}, /maps adapter IDs to accounts/],
+    [{ accounts: [] }, /maps adapter IDs to accounts/],
+    [{ accounts: { 'bad id!': A } }, /not an adapter ID/],
+    [{ accounts: { [`a${'x'.repeat(128)}`]: A } }, /not an adapter ID/],
+    [{ accounts: { 'adapter-a': 'Root User' } }, /not an account name/],
+    [{ accounts: { 'adapter-a': 7 } }, /not an account name/],
+  ]) assert.throws(() => validateHarnessesConfig(bad), why);
+  // The 16a shape, keyed by Soul and member, is gone; the refusal names its replacement.
+  assert.throws(() => validateConfig({ members: { accounts: { [SOUL]: { m_lead: A } } } }), /unknown key members; .*harnesses: \{ dir\?, accounts: \{ <adapter_id>: <account> \} \}/);
   const l = layout();
   try {
-    assert.throws(() => planMemberEndpoints(membersConfig(l.dir), { hqUid, platform: 'darwin', resolve: l.resolve }), /needs the Linux protected profile/);
+    assert.throws(() => planHarnessEndpoints(harnessesConfig(l.dir), { hqUid, platform: 'darwin', resolve: l.resolve, lstat: l.lstat }), /needs the Linux protected profile/);
   } finally { l.remove(); }
 });
 
 test('the endpoint layout is verified, never repaired', () => {
   const l = layout();
-  const plan = (over = {}, cfg = membersConfig(l.dir)) => planMemberEndpoints(cfg, { hqUid, platform: 'linux', resolve: l.resolve, ...over });
+  const plan = (over = {}, cfg = harnessesConfig(l.dir)) => planHarnessEndpoints(cfg, { hqUid, platform: 'linux', resolve: l.resolve, lstat: l.lstat, ...over });
   try {
     const planned = plan();
-    assert.deepEqual(planned.endpoints.map((e) => [e.account, e.uid, e.path]), [[A, UIDS[A], join(l.dir, A, 'broker.sock')], [B, UIDS[B], join(l.dir, B, 'broker.sock')]]);
-    assert.equal(planned.accountOf(SOUL, 'm_lead').account, A);
-    assert.equal(planned.accountOf(SOUL, 'm_other'), undefined);
+    assert.deepEqual(planned.endpoints.map((e) => [e.account, e.uid, e.path, e.home, e.adapters]), [[A, UIDS[A], join(l.dir, A, 'broker.sock'), l.homes[A], ['adapter-a']], [B, UIDS[B], join(l.dir, B, 'broker.sock'), l.homes[B], ['adapter-b']]]);
+    assert.equal(planned.accountOf('adapter-a').account, A);
+    assert.equal(planned.accountOf('adapter-other'), undefined);
+    assert.equal(planned.accountOf('constructor'), undefined, 'only the config\'s own keys');
+    // Two adapters on one account: one endpoint, resolved once.
+    const resolved = [];
+    const shared = plan({ resolve: (n) => { resolved.push(n); return l.resolve(n); } }, harnessesConfig(l.dir, { 'adapter-a': A, 'adapter-c': A, 'adapter-b': B }));
+    assert.deepEqual(shared.endpoints.map((e) => [e.account, e.adapters]), [[A, ['adapter-a', 'adapter-c']], [B, ['adapter-b']]]);
+    assert.deepEqual(resolved, [A, B]);
+    assert.equal(shared.accountOf('adapter-c'), shared.accountOf('adapter-a'));
 
     const as = (name, info) => (n) => (n === name ? { ...l.resolve(n), ...info } : l.resolve(n));
     assert.throws(() => plan({ resolve: as(A, { uid: 0 }) }), /is root/);
@@ -108,8 +102,8 @@ test('the endpoint layout is verified, never repaired', () => {
     assert.throws(() => plan({ resolve: as(A, { groupMembers: ['mallory'] }) }), /must be a private group/);
     assert.throws(() => plan({ resolve: as(A, { gid: l.gids[A] + 1 }) }), /has group/);
     assert.throws(() => plan({ hqUid: hqUid + 1 }), /owned by uid/);
-    assert.throws(() => plan({}, membersConfig(l.dir, { m_lead: A, m_spec: 'hqm_missing' })), /does not exist on this host/);
-    assert.throws(() => plan({}, membersConfig(join(l.dir, 'nowhere'))), /does not exist; the provisioner creates it/);
+    assert.throws(() => plan({}, harnessesConfig(l.dir, { 'adapter-a': A, 'adapter-b': 'hqm_missing' })), /does not exist on this host/);
+    assert.throws(() => plan({}, harnessesConfig(join(l.dir, 'nowhere'))), /does not exist; the provisioner creates it/);
 
     chmodSync(join(l.dir, A), 0o750);
     assert.throws(() => plan(), /must be 2750/);
@@ -123,28 +117,59 @@ test('the endpoint layout is verified, never repaired', () => {
   } finally { l.remove(); }
 });
 
+test('a harness account\'s home is verified, never repaired: a real directory, the account\'s, 0700 (row 16b)', () => {
+  const l = layout();
+  const plan = (over = {}) => planHarnessEndpoints(harnessesConfig(l.dir), { hqUid, platform: 'linux', resolve: l.resolve, lstat: l.lstat, ...over });
+  const as = (name, info) => (n) => (n === name ? { ...l.resolve(n), ...info } : l.resolve(n));
+  try {
+    assert.doesNotThrow(() => plan());
+    assert.throws(() => plan({ resolve: as(A, { home: '' }) }), /no home directory of its own/);
+    assert.throws(() => plan({ resolve: as(A, { home: 'relative/home' }) }), /no home directory of its own/);
+    assert.throws(() => plan({ resolve: as(A, { home: '/' }) }), /no home directory of its own/);
+    assert.throws(() => plan({ resolve: as(A, { home: join(l.homes[A], 'missing') }) }), /does not exist; the provisioner creates it/);
+    // Owned by someone else: HQ's account, or the other harness account.
+    l.owners[A] = hqUid;
+    assert.throws(() => plan(), /is owned by uid/);
+    l.owners[A] = UIDS[B];
+    assert.throws(() => plan(), /is owned by uid/);
+    l.owners[A] = UIDS[A];
+    // Any group or other bit.
+    for (const mode of [0o750, 0o705, 0o701, 0o710, 0o770]) {
+      chmodSync(l.homes[A], mode);
+      assert.throws(() => plan(), /must be 0700/, mode.toString(8));
+    }
+    chmodSync(l.homes[A], 0o700);
+    // A symlink to a good directory is still refused.
+    renameSync(l.homes[A], `${l.homes[A]}.real`);
+    symlinkSync(`${l.homes[A]}.real`, l.homes[A]);
+    assert.throws(() => plan(), /is not a directory/);
+  } finally { l.remove(); }
+});
+
 test('an account is read from the host through getent', () => {
   const run = (file, args) => {
     assert.equal(file, 'getent');
     if (args[0] === 'passwd' && args[1] === A) return `${A}:x:1201:1301::/home/${A}:/usr/sbin/nologin\n`;
+    if (args[0] === 'passwd' && args[1] === 'short_entry') return 'short_entry:x:1202:1302\n';
     if (args[0] === 'group' && args[1] === '1301') return `${A}:x:1301:${A},guest\n`;
     throw new Error('exit 2');
   };
-  assert.deepEqual(resolveAccount(A, { run }), { uid: 1201, gid: 1301, groupMembers: [A, 'guest'] });
+  assert.deepEqual(resolveAccount(A, { run }), { uid: 1201, gid: 1301, groupMembers: [A, 'guest'], home: `/home/${A}` });
+  assert.throws(() => resolveAccount('short_entry', { run }), /unreadable passwd entry/);
   assert.throws(() => resolveAccount('nobody_here', { run }), /does not exist on this host/);
 });
 
-test('HQ opens one 0660 endpoint per member account and names them in status', async () => {
+test('HQ opens one 0660 endpoint per harness account and names them in status', async () => {
   const t = await setup();
   try {
-    assert.deepEqual(t.status.hq.sockets.members.map((m) => m.account), [A, B]);
+    assert.deepEqual(t.status.hq.sockets.harnesses.map((m) => [m.account, m.adapters]), [[A, ['adapter-a']], [B, ['adapter-b']]]);
     for (const account of [A, B]) assert.equal(statSync(t.endpoint(account)).mode & 0o777, 0o660);
     // The shared socket is still there, still 0600.
     assert.equal(statSync(t.hq.paths.broker).mode & 0o777, 0o600);
   } finally { await t.cleanup(); }
 });
 
-test('a member binds from its own endpoint with a keyed proof, and the binding is never sent', async () => {
+test('an agent binds from its harness account\'s endpoint with a keyed proof, and the binding is never sent', async () => {
   const t = await setup();
   try {
     const { lead } = await t.admit();
@@ -161,11 +186,11 @@ test('a member binds from its own endpoint with a keyed proof, and the binding i
   } finally { await t.cleanup(); }
 });
 
-test('T01: a binding copied to another member is refused, whatever it presents', async () => {
+test('T01: a binding copied to another harness account is refused, whatever it presents', async () => {
   const t = await setup();
   try {
     const { lead, spec } = await t.admit();
-    // Member B holds A's runtime ID and A's channel binding.
+    // Account B holds A's runtime ID and A's channel binding.
     refused(await t.bind(await t.on(B), lead.runtime_id, lead.channel_binding));
     // The shared socket does not speak for an account-bound runtime, in either form.
     refused(await t.bind(await t.on(), lead.runtime_id, lead.channel_binding));
@@ -222,9 +247,9 @@ test('T01 after a restart: the account a runtime was admitted for is in the stor
   const first = await setup();
   const { lead, spec } = await first.admit();
   const { home } = first;
-  const { dir, resolve } = first.made;
+  const { dir, resolve, lstat } = first.made;
   await first.cleanup({ keep: true });
-  const again = await setup({ home, dir, resolve });
+  const again = await setup({ home, dir, resolve, lstat });
   try {
     refused(await again.bind(await again.on(B), lead.runtime_id, lead.channel_binding));
     refused(await (await again.on()).request('bind', { runtime_id: lead.runtime_id, channel_binding: lead.channel_binding }));
@@ -236,25 +261,61 @@ test('T01 after a restart: the account a runtime was admitted for is in the stor
   }
 });
 
-test('a member with no account keeps the shared socket; an account endpoint never speaks for it', async () => {
-  const t = await setup({ accounts: { m_lead: A } });
+test('an agent whose harness has no account keeps the shared socket; an account endpoint never speaks for it', async () => {
+  const t = await setup({ accounts: { 'adapter-a': A } });
   try {
     const { lead, spec } = await t.admit();
-    assert.deepEqual(t.status.hq.sockets.members.map((m) => m.account), [A]);
-    // The specialist has no account: cooperative, as before, in either form.
+    assert.deepEqual(t.status.hq.sockets.harnesses.map((m) => m.account), [A]);
+    // The specialist's harness has no account: cooperative, as before, in either form.
     assert.equal((await (await t.on()).request('bind', { runtime_id: spec.runtime_id, channel_binding: spec.channel_binding })).ok, true);
     assert.equal((await t.bind(await t.on(), spec.runtime_id, spec.channel_binding)).ok, true);
-    // But not through another member's endpoint.
+    // But not through a harness account's endpoint.
     refused(await t.bind(await t.on(A), spec.runtime_id, spec.channel_binding));
     assert.equal((await t.bind(await t.on(A), lead.runtime_id, lead.channel_binding)).ok, true);
+  } finally { await t.cleanup(); }
+});
+
+test('two adapters on one account share its endpoint, and both agents bind there; only the keyed proof tells them apart', async () => {
+  const t = await setup({ accounts: { 'adapter-a': A, 'adapter-c': A } , roles: ['adapter-a', 'adapter-c'] });
+  try {
+    assert.deepEqual(t.status.hq.sockets.harnesses.map((m) => [m.account, m.adapters]), [[A, ['adapter-a', 'adapter-c']]]);
+    const { lead, spec } = await t.admit();
+    const [rl, rs] = [lead, spec].map((r) => t.hq.core.tables.get('hq-admission\0runtimes').get(r.runtime_id));
+    assert.deepEqual([rl.harness_account, rl.adapter_id, rs.harness_account, rs.adapter_id], [A, 'adapter-a', A, 'adapter-c']);
+    assert.equal((await t.bind(await t.on(A), lead.runtime_id, lead.channel_binding)).ok, true);
+    assert.equal((await t.bind(await t.on(A), spec.runtime_id, spec.channel_binding)).ok, true);
+    // Same account, the other agent's key: refused.
+    refused(await t.bind(await t.on(A), lead.runtime_id, spec.channel_binding));
+    // Neither binds from the shared socket.
+    refused(await t.bind(await t.on(), spec.runtime_id, spec.channel_binding));
+    assert.deepEqual(t.receipts('hq.bind').map((r) => [r.member_id, r.caller_account]), [['m_lead', A], ['m_spec', A]]);
+  } finally { await t.cleanup(); }
+});
+
+test('the fixture\'s Hello, both roles on one adapter, binds both runtimes to that adapter\'s account', async () => {
+  const t = await setup({ accounts: { 'fake-adapter': A } });
+  try {
+    const entry = await t.entry();
+    const r = (await entry.request('Hello', hello())).result;
+    for (const a of r.admitted_runtimes) {
+      assert.ok(!('adapter_id' in a), 'the admission result keeps its shape');
+      assert.equal(t.hq.core.tables.get('hq-admission\0runtimes').get(a.runtime_id).harness_uid, UIDS[A]);
+      assert.equal((await t.bind(await t.on(A), a.runtime_id, a.channel_binding)).ok, true);
+    }
   } finally { await t.cleanup(); }
 });
 
 test('HQ refuses to start on a layout that is not the provisioner\'s', async () => {
   const l = layout();
   try {
+    const start = (over = {}) => startHQ({ platform: 'linux', accounts: l.resolve, harnessLstat: l.lstat, launch: { spawn: fakeSudo().spawn }, config: { acceptedDefinitions: { [SOUL]: [DIGEST] }, harnesses: harnessesConfig(l.dir) }, plugins: [referenceBroker()], ...over });
     chmodSync(join(l.dir, B), 0o2755);
-    await assert.rejects(startHQ({ platform: 'linux', accounts: l.resolve, config: { acceptedDefinitions: { [SOUL]: [DIGEST] }, members: membersConfig(l.dir) }, plugins: [referenceBroker()] }), /must be 2750/);
-    await assert.rejects(startHQ({ platform: 'darwin', accounts: l.resolve, config: { acceptedDefinitions: { [SOUL]: [DIGEST] }, members: membersConfig(l.dir) } }), /needs the Linux protected profile/);
+    await assert.rejects(start(), /must be 2750/);
+    chmodSync(join(l.dir, B), 0o2750);
+    // A home others can read refuses the start too, as a bad endpoint does.
+    chmodSync(l.homes[B], 0o755);
+    await assert.rejects(start(), /must be 0700/);
+    chmodSync(l.homes[B], 0o700);
+    await assert.rejects(start({ platform: 'darwin' }), /needs the Linux protected profile/);
   } finally { l.remove(); }
 });

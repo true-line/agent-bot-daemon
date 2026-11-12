@@ -953,8 +953,8 @@ repository that does the work; this repository tracks only its own rows.
 | 15c | agent-bot-daemon, agent-bot-identity | WP2 | **Enrollment on the signer's key** (`hq/enrollment.mjs`, opt-in with `enrollment.source: hq`; `legacy` stays the default until the identity-service link can use the enrolled device; a real enrollment on a software key succeeded on 2026-11-10): device enrollment, re-enrollment (`enroll --force`, a fresh key generation) and the jwt-bearer assertion move into HQ and are signed by the signer | The identity service's device record names the signer's key, with the `key_storage` the signer reports (`software` unless `hardwareSigner` is on); device status no longer comes from the legacy bridge |
 | 15d | agent-bot-identity, agent-comms | WP2 | **Soul tokens without a key file:** HQ asks the identity service for `v2` soul tokens (the agent-bot-comms broker already verifies them) and `vouch-key.pem` is removed, with the keyd grants it signs today | No `vouch-key.pem` on the host; soul token `v1` off. With `hardwareSigner` on there is no signing key file at all; T02 |
 | 16 | agent-bot-daemon | WP2 | **Linux protected profile:** per-member service identities, namespaces, broker socket and workspace views as the only exits, caller-bound grant handles. Proposed in the four slices below. | T01–T03, T21 |
-| 16a | agent-bot-daemon | WP2 | **Caller identity from the kernel:** HQ learns which OS account is on a member connection from the host, never from a field the member sends. A runtime belongs to the member account it was admitted for; a binding or grant handle presented from any other account is `caller_mismatch` before the operation, and still after an HQ restart. As a second layer, `bind` answers a challenge: the runtime proves it holds its key and the binding is never sent. **Built in all three repositories:** HQ (`hq/members.mjs`, [#113](https://github.com/true-line/agent-bot-hq/pull/113)), the agent-comms broker plugin ([agent-bot-comms#312](https://github.com/true-line/agent-bot-comms/pull/312)) and the Soul member ([agent-bot-souls#3](https://github.com/true-line/agent-bot-souls/pull/3)), which never sends the binding. Still to come: agent-bot-machine creates the endpoint directories | T01 on two real accounts: member B presents member A's binding and handle and is refused; a caller on the right endpoint without the runtime's key is refused too |
-| 16b | agent-bot-daemon | WP2 | **Member accounts and HQ-controlled launch:** HQ starts every member runtime under that member's own account through a launcher HQ cannot widen; member state lives in the member's home at 0700; HQ's state directory admits only the HQ account | A member reads neither another member's state nor any file in HQ's state directory, and cannot run HQ's signer or credential tooling (T02) |
+| 16a | agent-bot-daemon | WP2 | **Caller identity from the kernel:** HQ learns which OS account is on a broker connection from the host, never from a field the caller sends. Since platform PDR-0053 the account is the harness's (D7 as amended): a runtime belongs to the account of its role's adapter, fixed at admission; a binding or grant handle presented from any other account is `caller_mismatch` before the operation, and still after an HQ restart. The account check proves which harness credential is calling, not which agent: two agents in one harness account are told apart only by the second layer, where `bind` answers a challenge, the runtime proves it holds its key, and the binding is never sent. **Built in all three repositories:** HQ (`hq/harness-accounts.mjs`, first as `hq/members.mjs` in [#113](https://github.com/true-line/agent-bot-hq/pull/113) and re-keyed by harness in row 16b), the agent-comms broker plugin ([agent-bot-comms#312](https://github.com/true-line/agent-bot-comms/pull/312)) and the Soul runtime ([agent-bot-souls#3](https://github.com/true-line/agent-bot-souls/pull/3)), which never sends the binding. Still to come: agent-bot-machine creates the endpoint directories | T01 on two real accounts: the agent in account B presents the binding and handle of the agent in account A and is refused; a caller on the right endpoint without the runtime's key is refused too |
+| 16b | agent-bot-daemon | WP2 | **Harness accounts and HQ-controlled launch:** HQ starts every agent in the OS account of its harness (D7 as amended by platform PDR-0053) through a launcher HQ cannot widen; each agent works in a 0700 directory of its own in that account; HQ's state directory admits only the HQ account. **Built in HQ** (`hq/launch.mjs`): a two-step launch on the admission socket, after which the attached connection is the agent's stdin and stdout; stop signals the launch's own process group, learned from a marker the launch wrapper prints, and nothing else; a launch HQ cannot confirm stopped is held as uncontained; homes are verified at start. Still to come: the entry point in agent-bot-souls starts agents through it, agent-bot-machine installs the rule, the agent's working directory is captured into the Soul's package, a launch is stopped when its runtime's lease expires or is superseded, HQ cleans up after its own crash, and a process that leaves its group (setsid) is contained, which needs a cgroup and so root | An agent reads neither another harness account's state nor any file in HQ's state directory, and cannot run HQ's signer or credential tooling; stopping one launch leaves another launch in the same account running (T02) |
 | 16c | agent-bot-daemon | WP2 | **Exits:** a member account has no network route of its own. The member broker socket and its workspace view are the only ways out | A member's direct connection to a provider or service is blocked by the host, while the same request through the broker socket is delivered (T03) |
 | 16d | agent-bot-daemon | WP2 | **Qualification and the label:** the hostile-member suite (T01–T03, T21) as one suite that row 29 reuses on macOS; a qualification record for the host; `managed-protected` reported only when the record, member accounts, the HQ account and a hardware key all hold | The suite passes on the Linux reference host under `managed-protected`; run under `managed-cooperative`, every receipt names cooperative and each protected claim is `profile_insufficient` (T21) |
 
@@ -993,13 +993,16 @@ host key; and a broker that cannot refresh the service's signing keys rejects
 every version 2 token without logging why. Row 15d is not done until the
 first is resolved and the keyd grants no longer need the file.
 
-**Row 16 is proposed as four slices, in this order.** 16a comes first because
+**Row 16 is proposed as four slices, in this order.** Rows 16a and 16b were
+first written with one account per member; platform PDR-0053 (D7 as amended)
+changed that to one account per harness credential, and both are built to
+the amended form. 16a comes first because
 it changes what HQ trusts: today a channel binding is a bearer secret (§4.9),
 and nothing after it is worth building on that. 16d comes last because it only
 reports what the other three enforce.
 
 - **The slices do not wait for the real accounts.** On an owner's host the HQ
-  account and the member accounts are created by agent-bot-machine (D1, D6),
+  account and the harness accounts are created by agent-bot-machine (D1, D6),
   which has not delivered that slice, and HQ's move into its own account is
   [issue 88](https://github.com/true-line/agent-bot-hq/issues/88). The CI job
   creates throwaway accounts itself, so each slice is built and tested on real
@@ -1013,13 +1016,21 @@ reports what the other three enforce.
 
 **Decided by the owner on 2026-11-10 (16a).** The account check is the gate,
 and a signature is added to it, not used instead of it. A signature proves a
-caller holds a key, not who the caller is: while members share an account,
-one member can read another's key as easily as its binding. So:
+caller holds a key, not who the caller is: in one account, one process can
+read another's key as easily as its binding. So:
 
-- HQ opens one broker endpoint per member account, in a directory only that
-  account can enter. The file system identifies the caller, with no native
-  code. Reading the peer's credentials through a native helper stays the
-  fallback if per-member endpoints prove unworkable.
+- HQ opens one broker endpoint per account, in a directory only that
+  account can enter. The file system identifies the calling account, with no
+  native code. Reading the peer's credentials through a native helper stays
+  the fallback if per-account endpoints prove unworkable.
+- **Since platform PDR-0053 the account is the harness's.** The owner's config
+  maps adapter IDs (`requested_roles[].adapter_id` in Hello) to accounts,
+  several adapters may share one account, and there is one endpoint per
+  account. What the check now proves is the harness credential, not the
+  agent: agents of every Soul on one harness share its account, and to the
+  host they are one trust domain. Inside it, the keyed proof below is what
+  tells two agents apart; it does not stop one agent in the account from
+  reading another's key.
 - On each connection HQ sends a challenge and the runtime answers it with a
   proof keyed by a secret made for that runtime at admission. This is once
   per connection, not per request, because the connection then speaks for
@@ -1033,23 +1044,23 @@ one member can read another's key as easily as its binding. So:
   to a third party. A key pair made by the runtime would need a new field in
   the pinned hq/v1 Hello or Equip record, which is a soul-contracts change;
   it can replace the keyed hash later without changing the two frames.
-- Neither layer restrains a member acting as itself. What a member may do is
+- Neither layer restrains an agent acting as itself. What an agent may do is
   limited by its grants, not by how it proves who it is.
 
-**Decided by the owner on 2026-11-10 (16b): who starts a member.** HQ
-starts each member under that member's account, through a rule that
-agent-bot-machine installs once at provisioning. HQ is not root and gets no
-other privilege.
+**Decided by the owner on 2026-11-10 (16b): who starts an agent.** HQ
+starts each agent in its harness's account (first written as the member's
+own account; amended by platform PDR-0053), through a rule that agent-bot-machine
+installs once at provisioning. HQ is not root and gets no other privilege.
 
-- The rule lets the HQ account, and nobody else, start a process as a member
-  account, and as nothing else: not root, not `admin`, not the owner. HQ
-  cannot change the rule, because it belongs to the provisioner.
+- The rule lets the HQ account, and nobody else, start a process as a
+  harness account, and as nothing else: not root, not `admin`, not the
+  owner. HQ cannot change the rule, because it belongs to the provisioner.
 - Launches do not go through agent-machine at runtime. It holds the keys
   (D4), so it must not be the parent of the code trusted least, and the entry
-  point's pipes to a member would have to cross accounts.
-- The stated cost: a compromised HQ can start any command as any member
-  account. It can do nothing a member could not already do.
-- The first form is a sudoers rule. A systemd unit per member can replace it
+  point's pipes to an agent would have to cross accounts.
+- The stated cost: a compromised HQ can start any command as any harness
+  account. It can do nothing an agent in that account could not already do.
+- The first form is a sudoers rule. A systemd unit per account can replace it
   without changing what HQ asks for.
 - Before the provisioner runs any command as root, the owner sees the
   request and accepts it in the local web UI. Nothing privileged runs on an
@@ -1061,9 +1072,113 @@ other privilege.
   UI stays read-only for the pilot (Q6 is unchanged). The approval becomes an
   HQ approval record when HQ's UI gains a write path (row 21). The hosted
   website can show that a request is waiting; it does not approve or run it.
-- agent-bot-machine also creates the member accounts and the endpoint
-  directories of 16a. Its contract is
+- agent-bot-machine also creates the harness accounts and the endpoint
+  directories of 16a (still under `/run/agent-bot-hq/members`, a name that
+  predates platform PDR-0053). Its contract is
   [agent-bot-machine#470](https://github.com/true-line/agent-bot-machine/issues/470).
+
+**As built (16b), in HQ only.**
+
+- **Accounts by harness.** HQ's config is
+  `harnesses: { dir?, accounts: { <adapter_id>: <account> } }`; adapter IDs
+  are checked against the Hello schema's pattern, and several may name one
+  account. A runtime is bound at admission to the account of its role's
+  adapter. A role whose adapter has no account stays on the shared socket.
+  The 16a key `members` is refused with a message that names `harnesses`.
+- **One form of launch.** HQ starts an agent only as
+  `sudo -n -H -u <account> -- /bin/sh -c '<shell>' sh <soul_id> <member_id> <command>`,
+  where the fixed shell sets `umask 077`, creates
+  `$HOME/.agent-bot-hq/souls/<soul_id>/<member_id>/` at 0700 as that
+  account, changes into it and execs the command. The IDs are positional
+  arguments, checked against their patterns, never part of the script.
+  `HOME` stays the account's real home, where the harness's sign-in lives.
+  The account comes from the runtime's admission, never from the request.
+  The child's environment is the four variables a request may set
+  (`AGENT_BOT_SOULS_SOCKET`, `_MEMBER_TOKEN`, `_MEMBER_ID`, `_ROLE`),
+  `AGENT_BOT_SOULS_BROKER` set by HQ to that account's own endpoint, and a
+  fixed `PATH`. A request that names any other variable,
+  `AGENT_BOT_SOULS_BROKER` included, is refused. HQ's own environment never
+  reaches the child.
+- **Two steps, because the admission socket is request and reply.** The
+  connection that owns the runtime sends `launch { runtime_id, command, env }`.
+  HQ checks the caller and the runtime, the platform, the harness account,
+  whether the rule covers that account, that nothing else runs for that Soul
+  and agent, and the payload, in that order, and returns a launch ID and a
+  one-time token valid for 30 seconds. Nothing runs yet. Then
+  `launch.attach { launch_id, attach }` is the first and only request on a
+  new connection. HQ spends the token, right or wrong, starts the agent and
+  answers. From then on that connection carries the agent's stdin and
+  stdout and is no longer read as requests. A client that sends anything
+  before the answer is refused and nothing starts. `launch.stop { launch_id }`
+  stops an agent and can be repeated. These operations are HQ's own framing,
+  like `bind.challenge` in 16a; no contract record changed.
+- **Stop works on the launch's process group, and only on it.** The
+  account is shared and HQ does not own everything in it (the harness's own
+  sign-in session, a harness the owner started, Souls HQ did not start), so
+  HQ stops only what it started. sudo is started detached, so HQ's own
+  signals and terminal never reach a launch. Where the agent's group is
+  depends on sudo: without a pty it stays in sudo's group, and with
+  `use_pty`, which Ubuntu sets, sudo puts it in a new session and group. So
+  HQ does not guess. The wrapper's first action, before the agent exists, is
+  to read its own group from `/proc/self/stat` (field 5, with the shell's
+  `read` builtin) and print `agent-bot-hq-launch pgid <n>` on stderr; the
+  script stays a constant. HQ takes the first stderr line that matches that
+  exactly (digits only, a safe integer above 1) as the group and does not
+  log it; lines before it, such as sudo's warnings, are logged, and a later
+  matching line is ordinary stderr. The first match is genuine because the
+  wrapper prints it before it execs the agent and sudo's own messages never
+  take that form. If the read failed, an agent could print the first match
+  itself; at worst that points HQ's signals at another group of the same
+  account, which the agent could already signal. If stop comes before the
+  marker, HQ waits for the marker or the exit, up to five seconds, and then
+  falls back to sudo's pid. Stop closes the agent's stdin and, as the
+  harness account through the same rule, sends `kill -TERM -<pgid>`, then
+  `kill -KILL -<pgid>` after a grace period. An agent that exits on its own
+  gets the same KILL to its group. Nothing else is signalled.
+- **What that does not stop.** A process that leaves the launch's group
+  (setsid, or a group of its own) is not stopped by HQ and keeps running in
+  the harness account. Agents in one harness account are one trust domain
+  to the host, so such a process can reach only what its account already
+  could. Containing it needs a cgroup, which needs root and is not this
+  slice.
+- **Fail closed when containment is unknown.** Every signal command ends
+  `2>/dev/null; exit 0`, so a non-zero exit means sudo or the rule failed,
+  not that nothing was left to signal. A failed signal (sudo refuses, a
+  timeout, a spawn error), or sudo still running five seconds after the
+  KILL, leaves the launch `uncontained`: its slot is kept and a new launch
+  for that Soul and agent is `host.launch_busy` with the reason, status
+  shows it, the `hq.launch.exited` receipt says `contained: false`, and the
+  log names the process group and tells the owner to check it and the rule.
+  Launches live in memory, so an HQ restart clears it. Every normal exit
+  receipt says `contained: true`.
+- **Verified, never repaired.** At start HQ checks each harness account's
+  home from its passwd entry: a directory, not a symlink, owned by the
+  account, with no group or other bits, since it holds the harness's sign-in
+  and its agents' working state. A bad home refuses the start, as a bad
+  endpoint layout does in 16a. HQ also asks sudo once per account whether
+  the rule covers it. Without the rule HQ still starts and serves 16a,
+  launch for that account is refused, and status and the profile reasons
+  say why.
+- **What the profile says.** Without `harnesses` the reason is that agents
+  of every harness share one account. With it, the reasons name an admitted
+  agent whose harness has no account, or an account HQ cannot launch in.
+  HQ adds no claim of protection and still reports `managed-cooperative`:
+  its own account, the qualification (16d) and a hardware key are still
+  missing.
+- **Not yet.** The entry point in agent-bot-souls still spawns agents
+  itself. The agent's working directory is not captured into the Soul's
+  package (`home/<member>/` in the package format); that belongs to the
+  entry point and the soul-package work. A launched agent is not stopped
+  when its runtime's lease expires or a newer admission supersedes it. HQ
+  does not clean up after a crash, so an agent left running by an HQ that
+  crashed keeps running until the owner ends it. A process that leaves its
+  launch's group is not stopped by HQ (above); containing it needs a cgroup
+  and so root. HQ still runs in the
+  owner's account (#88), so "HQ's state directory admits only the HQ
+  account" holds against agents, not yet against the owner's other
+  processes. The SDK's `launch` service for plugins is still the fake one;
+  only HQ core starts agents. T02 runs in CI on two throwaway accounts
+  (`tests/hq-launch-real.test.mjs`).
 
 Open question for the owner, with a recommendation, settled in the slice
 that needs it:
@@ -1230,6 +1345,20 @@ These are this repository's decisions, and the platform's [decision log](https:/
   sandbox profile are kept, keyed by member instead of by harness, so two
   members on the same harness no longer share state (0.4 §4, T01–T03). The
   amendment lands in the SOP repository; #56 depends on it.
+  - **Amended by the owner on 2026-11-12, platform PDR-0053: one OS
+    account per harness credential, shared by the agents of every Soul on
+    that harness; the reason given was that per-member accounts multiply
+    without bound.** The account is now keyed by harness again, as ENG-0339
+    first had it, and holds that harness's sign-in. Agents in one harness
+    account are one trust domain to the host: the account separates
+    harnesses, not the agents on a harness, which only the keyed proof of
+    16a tells apart. PDR-0053 also fixes the vocabulary: a Soul is a
+    package with one stable ID; its Life is the Soul running over time; the
+    Lead is the Life's orchestrating harness; an agent is what runs in a
+    harness inside a Life; and a harness is the program an agent runs in.
+    "Member" stays only as the field name in released contracts
+    (`member_id`). Rows 16a and 16b are built to the amended form
+    ([platform PDR-0053](https://github.com/true-line/agent-bot-platform/blob/main/docs/04-decisions/PDR-0053-soul-life-and-agent-replace-member.md)).
   - **Delegates stay in the owner's account.** Per-member accounts are for
     Soul members doing development work, which authenticate as their
     agent-bot bot identity. An agent the owner runs in their own `user`

@@ -16,12 +16,17 @@
 // - Caller binding: the admission-socket connection that sent Hello owns its
 //   runtimes; any other connection gets `caller_mismatch` (T01, in the
 //   cooperative form: HQ cannot yet tell members apart, only connections).
-// - Member accounts (§9 row 16a): where the owner's config gives a member its
-//   own OS account, its runtime is bound to that account at admission. On
-//   the broker socket such a runtime binds only from that account's own
-//   endpoint (the file system identifies the caller), and only with a keyed
-//   proof over an HQ challenge, so the channel binding is never sent. Both
-//   must hold; either failing is `caller_mismatch`, also after a restart.
+// - Harness accounts (§9 row 16a; D7 as amended by platform PDR-0053):
+//   where the owner's config gives a role's harness (its adapter_id) an OS
+//   account, the runtime is bound to that account at admission. On the
+//   broker socket such a runtime binds only from that account's own endpoint
+//   (the file system identifies the account, the harness credential), and
+//   only with a keyed proof over an HQ challenge, so the channel binding is
+//   never sent. Both must hold; either failing is `caller_mismatch`, also
+//   after a restart. The account is shared by every agent on that harness,
+//   of every Soul: the endpoint tells HQ the account, and only the keyed
+//   proof tells two agents in it apart. To the host they are one trust
+//   domain.
 // - Profile: the one in force, with a warning when weaker than requested (R8).
 //
 // It provides withLiveRuntime to the task service (hq-tasks), so a task
@@ -71,11 +76,20 @@ const sameBinding = (a, b) => {
 
 const iso = (ms) => new Date(ms).toISOString();
 
-// memberAccount(soul, member) is the OS account the owner's config gives a
-// member ({ account, uid }), or undefined. callerOf(connection) is the account
-// a broker connection arrived from ({ account, uid }), or undefined on the
-// shared socket. HQ core supplies both; a member never does.
-export function admissionPlugin({ schemas, profileReasons = () => [], memberAccount = () => undefined, callerOf: connectionAccount = () => undefined }) {
+// The runtimes of a store view with no harness account, as HQ core's profile
+// reasons need them: { soul_id, member_id, adapter_id, lease_expires_at }.
+const unboundOf = (tx) => tx.list('runtimes').map(([, rt]) => rt).filter((rt) => !rt.superseded && rt.harness_uid === undefined)
+  .map((rt) => Object.freeze({ soul_id: rt.soul_id, member_id: rt.member_id, adapter_id: rt.adapter_id, lease_expires_at: rt.lease_expires_at }));
+
+// profileReasons(pending, unbound) are the reasons the profile in force is
+// not a stronger one: `pending` are the roles a Hello is admitting ({ soul_id,
+// member_id, adapter_id }), `unbound` the other live runtimes with no harness
+// account. harnessAccount(adapterId) is the OS account the owner's config
+// gives that harness ({ account, uid }), or undefined. callerOf(connection) is
+// the account a broker connection arrived from ({ account, uid }), or
+// undefined on the shared socket. HQ core supplies all three; an agent never
+// does.
+export function admissionPlugin({ schemas, profileReasons = () => [], harnessAccount = () => undefined, callerOf: connectionAccount = () => undefined }) {
   for (const n of SCHEMA_NAMES) if (!schemas?.[n]) throw new TypeError(`admission needs the pinned hq/v1 ${n} schema`);
 
   const check = (name, value, inbound) => {
@@ -96,6 +110,11 @@ export function admissionPlugin({ schemas, profileReasons = () => [], memberAcco
       const ttl = () => config.get('leaseTtlMs') ?? DEFAULT_LEASE_TTL_MS;
       const accepted = (soul, digest) => (config.get('acceptedDefinitions')?.[soul] ?? []).includes(digest);
       const id = (prefix, bytes = 12) => `${prefix}_${random.hex(bytes)}`;
+      // The live runtimes with no harness account, for HQ core's status
+      // (unboundRuntimes below). Refreshed after every transaction that adds
+      // or renews runtimes; read without one, so status never waits on the
+      // store. It informs the profile reasons only, never a decision.
+      let unbound = await store.tx((tx) => unboundOf(tx));
       const callerOf = (meta) => {
         if (typeof meta?.session !== 'string' || !meta.session) fail('caller_mismatch', 'no authenticated connection for this request');
         return meta.session;
@@ -121,7 +140,7 @@ export function admissionPlugin({ schemas, profileReasons = () => [], memberAcco
         const now = clock.now();
         // One transaction: the repeat check, the decision and its records, so
         // two Hellos with one request_id cannot both admit.
-        const { result, repeat } = await store.tx(async (tx) => {
+        const { result, repeat, unbound: after } = await store.tx(async (tx) => {
           const earlier = tx.get('hellos', payload.request_id);
           if (earlier) {
             if (earlier.caller !== caller) fail('caller_mismatch', `request ${payload.request_id} belongs to another connection`);
@@ -153,7 +172,9 @@ export function admissionPlugin({ schemas, profileReasons = () => [], memberAcco
           }
           const admitted = payload.requested_roles.map((r) => ({ member_id: r.member_id, role: r.role, runtime_id: id('rt', 8), channel_binding: id('cb', 16) }));
           const inForce = profile.current();
-          const warning = profileWarning(payload.requested_profile, inForce, profileReasons());
+          const pending = payload.requested_roles.map((r) => ({ soul_id: payload.soul_id, member_id: r.member_id, adapter_id: r.adapter_id }));
+          const others = unboundOf(tx).filter((rt) => now <= rt.lease_expires_at);
+          const warning = profileWarning(payload.requested_profile, inForce, profileReasons(pending, others));
           const decision = {
             contract: 'hq/v1',
             request_id: payload.request_id,
@@ -168,19 +189,22 @@ export function admissionPlugin({ schemas, profileReasons = () => [], memberAcco
           };
           check('admission-result', decision, false);
           tx.put('souls', payload.soul_id, { installation_id: payload.installation_id, epoch, lease_generation: leaseGeneration, decision_id: decision.decision_id, definition_digest: payload.definition_digest, admitted_at: now });
-          for (const a of admitted) {
+          for (const [i, a] of admitted.entries()) {
+            const adapterId = payload.requested_roles[i].adapter_id;
+            const account = harnessAccount(adapterId);
             tx.put('runtimes', a.runtime_id, {
-              soul_id: payload.soul_id, installation_id: payload.installation_id, member_id: a.member_id, role: a.role,
+              soul_id: payload.soul_id, installation_id: payload.installation_id, member_id: a.member_id, role: a.role, adapter_id: adapterId,
               channel_binding: a.channel_binding, caller, epoch, lease_generation: leaseGeneration,
               lease_expires_at: leaseExpires, renewal_sequence: 0, ready: false, superseded: false,
-              // The account this runtime belongs to, fixed at admission and
-              // kept in the store, so a restart cannot loosen it.
-              ...(memberAccount(payload.soul_id, a.member_id) ? { member_account: memberAccount(payload.soul_id, a.member_id).account, member_uid: memberAccount(payload.soul_id, a.member_id).uid } : {}),
+              // The harness account this runtime belongs to, fixed at
+              // admission and kept in the store, so a restart cannot loosen it.
+              ...(account ? { harness_account: account.account, harness_uid: account.uid } : {}),
             });
           }
           tx.put('hellos', payload.request_id, { caller, digest, result: decision, at: now });
-          return { result: decision, repeat: false };
+          return { result: decision, repeat: false, unbound: unboundOf(tx) };
         });
+        if (after) unbound = after;
         if (!repeat) {
           await receipts.append({ kind: 'hq.admission', request_id: result.request_id, decision_id: result.decision_id, soul_id: payload.soul_id, installation_id: payload.installation_id, installation_epoch: result.installation_epoch, lease_generation: result.lease_generation, profile_in_force: result.profile, runtimes: result.admitted_runtimes.length, caller });
         }
@@ -241,7 +265,7 @@ export function admissionPlugin({ schemas, profileReasons = () => [], memberAcco
         const caller = callerOf(meta);
         check('ready-and-lease-renewal', payload, true);
         const now = clock.now();
-        const out = await store.tx((tx) => {
+        const { out, unbound: after } = await store.tx((tx) => {
           const rt = liveRuntime(tx, payload.runtime_id, caller, now);
           if (payload.installation_epoch !== rt.epoch) fail('stale_epoch', `runtime ${payload.runtime_id} is at epoch ${rt.epoch}, not ${payload.installation_epoch}`);
           if (payload.lease_generation !== rt.lease_generation) fail('lease_expired', `runtime ${payload.runtime_id} holds lease generation ${rt.lease_generation}, not ${payload.lease_generation}`);
@@ -252,8 +276,9 @@ export function admissionPlugin({ schemas, profileReasons = () => [], memberAcco
             ...rt, ready: true, renewal_sequence: payload.renewal_sequence, lease_expires_at: leaseExpires,
             readiness_state: payload.readiness_state, auth_state: payload.auth_state, observed_health: payload.observed_health,
           });
-          return { contract: 'hq/v1', runtime_id: payload.runtime_id, installation_epoch: rt.epoch, lease_generation: rt.lease_generation, lease_expires_at: iso(leaseExpires) };
+          return { out: { contract: 'hq/v1', runtime_id: payload.runtime_id, installation_epoch: rt.epoch, lease_generation: rt.lease_generation, lease_expires_at: iso(leaseExpires) }, unbound: unboundOf(tx) };
         });
+        unbound = after;
         if (op === 'Ready') await receipts.append({ kind: 'hq.ready', runtime_id: payload.runtime_id, readiness_state: payload.readiness_state, caller });
         return out;
       };
@@ -319,9 +344,11 @@ export function admissionPlugin({ schemas, profileReasons = () => [], memberAcco
       //   { runtime_id, proof }            the keyed proof over this
       //                                    connection's challenge (row 16a)
       //   { runtime_id, channel_binding }  the binding itself; accepted only
-      //                                    for a runtime with no member account
-      // A runtime bound to a member account also needs the connection to come
-      // from that account's endpoint, and takes the proof form only. Every
+      //                                    for a runtime with no harness account
+      // A runtime bound to a harness account also needs the connection to come
+      // from that account's endpoint, and takes the proof form only. In a
+      // shared account the endpoint proves the account; the proof alone tells
+      // which of its agents is calling. Every
       // mismatch (unknown runtime, wrong key, wrong account, wrong form) gets
       // the same answer. Receipted without the binding or the proof.
       async function verifyBinding(input, meta) {
@@ -353,15 +380,15 @@ export function admissionPlugin({ schemas, profileReasons = () => [], memberAcco
               matches = sameBinding(rt?.channel_binding ?? 'x'.repeat(input.channel_binding.length), input.channel_binding);
             }
             if (!rt || !matches) mismatch();
-            if (rt.member_uid !== undefined) {
+            if (rt.harness_uid !== undefined) {
               // An account-bound runtime: the right account, and the proof form.
-              if (!caller || caller.uid !== rt.member_uid || !byProof) mismatch();
+              if (!caller || caller.uid !== rt.harness_uid || !byProof) mismatch();
             } else if (caller) {
-              // A member account's endpoint speaks only for that account's runtimes.
+              // A harness account's endpoint speaks only for that account's runtimes.
               mismatch();
             }
             current(rt, runtimeId, now);
-            return Object.freeze({ runtime_id: runtimeId, soul_id: rt.soul_id, member_id: rt.member_id, role: rt.role, installation_epoch: rt.epoch, lease_generation: rt.lease_generation, ...(rt.member_account ? { member_account: rt.member_account } : {}) });
+            return Object.freeze({ runtime_id: runtimeId, soul_id: rt.soul_id, member_id: rt.member_id, role: rt.role, installation_epoch: rt.epoch, lease_generation: rt.lease_generation, ...(rt.harness_account ? { harness_account: rt.harness_account } : {}) });
           });
           await receipts.append({ kind: 'hq.bind', runtime_id: runtimeId, soul_id: bound.soul_id, member_id: bound.member_id, proof: byProof ? 'hmac-sha256' : 'channel-binding', ...(caller ? { caller_account: caller.account } : {}) });
           return bound;
@@ -378,7 +405,14 @@ export function admissionPlugin({ schemas, profileReasons = () => [], memberAcco
         if (!rt) fail('host.invalid_request', `unknown runtime ${runtimeId}`);
         return fn(Object.freeze(current(rt, runtimeId, clock.now())));
       });
-      return { provides: { withLiveRuntime, withLeases, verifyBinding, bindChallenge, forgetConnection, withBoundRuntime } };
+      // For HQ core's profile reasons (§9 row 16b): the live runtimes with no
+      // harness account, as { soul_id, member_id, adapter_id }. HQ core reads
+      // them only through this, never this plugin's tables.
+      const unboundRuntimes = () => {
+        const now = clock.now();
+        return unbound.filter((rt) => now <= rt.lease_expires_at).map(({ soul_id: soulId, member_id: memberId, adapter_id: adapterId }) => ({ soul_id: soulId, member_id: memberId, adapter_id: adapterId }));
+      };
+      return { provides: { withLiveRuntime, withLeases, verifyBinding, bindChallenge, forgetConnection, withBoundRuntime, unboundRuntimes } };
     },
   });
 }

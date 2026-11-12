@@ -23,12 +23,26 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends swtpm tpm2-tools
           sudo apt-get install -y -q --no-install-recommends libtss2-tcti-swtpm0t64 || sudo apt-get install -y -q --no-install-recommends libtss2-tcti-swtpm0
-      # Two member accounts and their broker endpoint directories, laid out as
-      # the provisioner would (hq/members.mjs), for tests/hq-member-accounts.test.mjs.
-      - name: member accounts
+      # Two harness accounts, each with a 0700 home, and their broker endpoint
+      # directories, laid out as the provisioner would (hq/harness-accounts.mjs), for
+      # tests/hq-harness-accounts-real.test.mjs (T01) and tests/hq-launch-real.test.mjs (T02).
+      # HQ starts agents through sudo (hq/launch.mjs). The job's account already
+      # has passwordless sudo on GitHub runners, so no rule granting it is
+      # installed here. The drop-in carries only the environment lines of the
+      # rule agent-bot-machine writes, so sudo's env_reset keeps exactly the
+      # variables a launch passes, as it will on a provisioned host.
+      - name: harness accounts
         run: |
-          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hqm-a
-          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hqm-b
+          for a in hqm-a hqm-b; do
+            sudo useradd --system --user-group --create-home --home-dir "/home/$a" --shell /usr/sbin/nologin "$a"
+            sudo chmod 0700 "/home/$a"
+          done
+          me="$(id -un)"
+          printf 'Defaults:%s env_reset, !setenv\nDefaults:%s env_keep = "AGENT_BOT_SOULS_SOCKET AGENT_BOT_SOULS_MEMBER_TOKEN AGENT_BOT_SOULS_MEMBER_ID AGENT_BOT_SOULS_ROLE AGENT_BOT_SOULS_BROKER"\n' "$me" "$me" > /tmp/hq-launch.sudoers
+          sudo visudo -cf /tmp/hq-launch.sudoers
+          sudo install -m 0440 -o root -g root /tmp/hq-launch.sudoers /etc/sudoers.d/zz-hq-launch
+          sudo -n -u hqm-a -- /bin/true
+          ls -ld /home/hqm-a /home/hqm-b
           sudo mkdir -p /run/agent-bot-hq-test/members
           sudo chown "$(id -u)" /run/agent-bot-hq-test /run/agent-bot-hq-test/members
           sudo chmod 0755 /run/agent-bot-hq-test /run/agent-bot-hq-test/members
@@ -41,9 +55,9 @@ jobs:
       - name: test
         env:
           HQ_REQUIRE_TPM: '1'
-          HQ_REQUIRE_MEMBER_ACCOUNTS: '1'
-          HQ_MEMBER_DIR: /run/agent-bot-hq-test/members
-          HQ_MEMBER_ACCOUNTS: hqm-a,hqm-b
+          HQ_REQUIRE_HARNESS_ACCOUNTS: '1'
+          HQ_HARNESS_DIR: /run/agent-bot-hq-test/members
+          HQ_HARNESS_ACCOUNTS: hqm-a,hqm-b
         run: |
           node --version
           npm test

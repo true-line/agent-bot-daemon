@@ -5,9 +5,13 @@
 // managed-protected needs every one of these. None exists before §9 PR 16
 // (Linux) and PR 29 (macOS), so this skeleton never reports it:
 //   - HQ runs in its own OS account (D6: _agent-bot-hq / agent-bot-hq);
-//   - each member runs under its own principal (D7, PR 16);
+//   - each harness credential runs under its own OS account (D7, as amended
+//     by platform PDR-0053; PR 16). Whether accounts shared between Souls
+//     can earn managed-protected at all is unspecified (platform PDR-0053);
 //   - the host passed the hostile-member qualification (T01–T03, T21);
 //   - the HQ signer's key is a hardware key, not a key file (§9 PR 15).
+// Nothing in HQ sets `qualified` yet, so this code never reports
+// managed-protected.
 // managed-cooperative: the device is managed (enrolled with the identity
 // service) but containment is not enforced.
 // standalone-unenforced: the owner chose standalone in HQ's config.
@@ -17,7 +21,8 @@ export const HQ_ACCOUNTS = Object.freeze({ darwin: '_agent-bot-hq', linux: 'agen
 export function detectProfile({
   platform = process.platform,
   account,                     // the OS account HQ runs as
-  memberPrincipals = false,    // per-member principals in place (PR 16 / PR 29)
+  harnessAccounts = false,     // true when every admitted agent runs in its harness's own account
+                               // (PR 16 / PR 29); a string ending "(D7)" says which part is missing (hq/hq.mjs)
   qualified = false,           // hostile-member suite passed on this host
   standalone = false,          // owner config: run standalone, unenforced
   keyStorage,                  // the HQ signer's custody: hardware | software (hq/signer.mjs)
@@ -26,7 +31,7 @@ export function detectProfile({
   const expected = HQ_ACCOUNTS[platform];
   if (!expected) reasons.push(`platform ${platform} has no HQ account defined yet`);
   else if (account !== expected) reasons.push(`HQ runs in the ${account ?? 'unknown'} account, not ${expected} (D6; agent-bot-machine has not provisioned it)`);
-  if (!memberPrincipals) reasons.push('members share one account: no per-member principals (D7)');
+  if (harnessAccounts !== true) reasons.push(typeof harnessAccounts === 'string' && harnessAccounts ? harnessAccounts : 'agents of every harness share one account: no OS account per harness credential (D7)');
   if (!qualified) reasons.push('the host has not passed the hostile-member qualification (T01–T03, T21)');
   if (keyStorage !== 'hardware') reasons.push(`the HQ signer's key is ${keyStorage === 'software' ? 'a key file in HQ state (key_storage=software)' : 'not known to be a hardware key'}, so a process in HQ's account can copy it`);
   if (standalone) return { profile: 'standalone-unenforced', reasons: ['the owner chose standalone in HQ config', ...reasons] };
@@ -42,6 +47,6 @@ const RANK = { 'standalone-unenforced': 0, 'managed-cooperative': 1, 'managed-pr
 // says so (admission-result.cooperative fixture).
 export function profileWarning(requested, inForce, reasons) {
   if (!requested || RANK[inForce] >= RANK[requested]) return undefined;
-  const why = reasons.find((r) => r.startsWith('members share')) ?? reasons[0] ?? 'containment is not enforced on this host';
+  const why = reasons.find((r) => r.endsWith('(D7)')) ?? reasons[0] ?? 'containment is not enforced on this host';
   return `profile: ${requested} requested; ${inForce} in force (${why})`.slice(0, 512);
 }

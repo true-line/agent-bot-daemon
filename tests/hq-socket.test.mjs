@@ -6,8 +6,9 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { validate } from '../sdk/wire/schema.mjs';
+import { createCore } from '../sdk/services.mjs';
 import { createHQ } from '../hq/hq.mjs';
-import { checkSocketPath, MAX_LINE_BYTES } from '../hq/socket.mjs';
+import { checkSocketPath, connectSocket, listenSocket, MAX_LINE_BYTES, takeover } from '../hq/socket.mjs';
 import { errorResponseSchema, hello, schemas, startHQ, tempHome } from './hq-harness.mjs';
 
 test('status over the control socket reports managed-cooperative honestly, with reasons and the legacy daemon', async () => {
@@ -182,4 +183,58 @@ test('a socket path too long for sun_path is refused with a reason, before HQ wr
     await assert.rejects(startHQ({ home }), /Choose a shorter --home/);
     assert.equal(existsSync(join(home, 'store.json')), false);
   } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test('takeover: only a listener that allows it, only the first request, and only with nothing after it', async () => {
+  const home = tempHome();
+  const core = createCore();
+  const calls = [];
+  let gate;
+  // Every op answers with a takeover that echoes the stream back; `slow`
+  // waits for the test first.
+  const dispatch = async (op, meta) => {
+    calls.push([op, meta.takeover === true]);
+    if (op === 'plain') return { plain: true };
+    if (op === 'slow') await new Promise((r) => { gate = r; });
+    return takeover({ taken: op }, {
+      open: () => { calls.push(['open', op]); return (socket) => socket.pipe(socket); },
+      cancel: () => { calls.push(['cancel', op]); },
+    });
+  };
+  const listen = (name, canTakeOver) => listenSocket({ path: join(home, name), auth: 'entry-point', dispatch, core, newSession: () => 's', endSession: () => {}, ...(canTakeOver ? { takeover: true } : {}) });
+  const closed = await listen('closed.sock', false);
+  const open = await listen('open.sock', true);
+  try {
+    // A listener without it: an internal error, cancelled, never opened.
+    const c = await connectSocket(closed.path);
+    assert.equal((await c.request('grab')).host_refusal.code, 'host.internal');
+    assert.equal((await c.request('plain')).ok, true, 'the connection still parses requests');
+    await c.close();
+    assert.deepEqual(calls.splice(0), [['grab', false], ['cancel', 'grab'], ['plain', false]]);
+    // Not the first request: refused and cancelled.
+    const d = await connectSocket(open.path);
+    assert.equal((await d.request('plain')).ok, true);
+    assert.equal((await d.request('grab')).host_refusal.code, 'host.invalid_request');
+    await d.close();
+    assert.deepEqual(calls.splice(0), [['plain', true], ['grab', false], ['cancel', 'grab']]);
+    // The first request, alone: answered, then the bytes are the new owner's.
+    const e = await connectSocket(open.path);
+    assert.deepEqual((await e.request('grab')).result, { taken: 'grab' });
+    assert.deepEqual(await e.raw('{"id":7,"op":"plain"}\n'), { id: 7, op: 'plain' }, 'echoed, not dispatched');
+    await e.close();
+    assert.deepEqual(calls.splice(0), [['grab', true], ['open', 'grab']]);
+    // An oversized buffer while the first request is in flight refuses the
+    // connection, and the takeover that follows is not honoured.
+    const f = await connectSocket(open.path);
+    const refusal = f.raw(`{"id":1,"op":"slow"}\n${'x'.repeat(MAX_LINE_BYTES + 1)}`);
+    assert.match((await refusal).host_refusal.explanation, /exceeds/);
+    gate();
+    await new Promise((r) => setTimeout(r, 20));
+    await f.close();
+    assert.deepEqual(calls.splice(0), [['slow', true], ['cancel', 'slow']]);
+  } finally {
+    await closed.close();
+    await open.close();
+    rmSync(home, { recursive: true, force: true });
+  }
 });
