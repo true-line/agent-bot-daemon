@@ -412,7 +412,17 @@ export function createLauncher({
     proc.once('close', (code, signal) => { ended(code, signal); l.closed.resolve(); });
     // A failed kill is an error event too; only a failed spawn ends the launch.
     proc.on('error', () => { if (proc.pid === undefined) { ended(null, null); l.closed.resolve(); } });
-    for (const s of [proc.stdin, proc.stdout, proc.stderr]) s?.on('error', () => {});
+    // A failed pipe to or from the agent is logged, once per stream, never
+    // dropped: the launch then ends through the agent's exit or a stop. EPIPE
+    // on stdin is the ordinary case of an agent that exited with input unread.
+    for (const [name, s] of [['stdin', proc.stdin], ['stdout', proc.stdout], ['stderr', proc.stderr]]) {
+      let said = false;
+      s?.on('error', (e) => {
+        if (said) return;
+        said = true;
+        log(name === 'stdin' && e?.code === 'EPIPE' ? 'info' : 'warn', `launch ${l.launch_id}: the agent's ${name} failed (${e?.code ?? e?.message ?? 'unknown error'})`, { launch_id: l.launch_id });
+      });
+    }
     proc.stderr.setEncoding('utf8');
     proc.stderr.on('data', stderrSink(l));
     l.done = lifecycle(l);

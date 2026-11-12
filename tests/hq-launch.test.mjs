@@ -569,6 +569,27 @@ test('receipts name the launch without its environment or token; stderr reaches 
   } finally { await t.cleanup(); }
 });
 
+test('a failed pipe to or from the agent is logged once per stream, never dropped; the launch goes on and still stops', async () => {
+  const t = await setup();
+  try {
+    const { conn, child, launch_id: launchId } = await t.started();
+    const said = (re) => t.hq.core.logs.filter((g) => re.test(g.message));
+    child.stdout.emit('error', Object.assign(new Error('read EIO'), { code: 'EIO' }));
+    child.stdout.emit('error', Object.assign(new Error('read EIO'), { code: 'EIO' }));
+    child.stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+    const out = said(/the agent's stdout failed \(EIO\)/);
+    assert.equal(out.length, 1, 'once per stream');
+    assert.deepEqual([out[0].level, out[0].fields.launch_id], ['warn', launchId]);
+    // An agent that exited with input unread is ordinary, not a warning.
+    assert.deepEqual(said(/the agent's stdin failed \(EPIPE\)/).map((g) => g.level), ['info']);
+    const live = (await (await t.owner()).request('status')).result.hq.launch.launches;
+    assert.equal(live.find((x) => x.launch_id === launchId).state, 'running');
+    conn.end();
+    await until(() => t.receipts('hq.launch.exited').length === 1, 'the exit receipt');
+    assert.equal(t.receipts('hq.launch.exited')[0].contained, true);
+  } finally { await t.cleanup(); }
+});
+
 test('status lists launches and per-account readiness, without commands, environments or tokens', async () => {
   const t = await setup();
   try {
