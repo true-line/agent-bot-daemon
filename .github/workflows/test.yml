@@ -61,3 +61,23 @@ jobs:
         run: |
           node --version
           npm test
+      # The same TPM tests against a TPM that already exists and keeps its state
+      # (HQ_TPM_TCTI), as a real TPM on a host does. Here it is a software TPM
+      # holding a key at HQ's default handle and a leftover test key. The tests
+      # run twice: they clear their own handles and leave HQ's key alone.
+      - name: test (existing TPM)
+        env:
+          HQ_REQUIRE_TPM: '1'
+          HQ_TPM_TCTI: swtpm:host=127.0.0.1,port=2321
+        run: |
+          state="$(mktemp -d)"
+          swtpm socket --tpm2 --tpmstate "dir=$state" --server type=tcp,port=2321 --ctrl type=tcp,port=2322 --flags not-need-init,startup-clear --daemon
+          export TPM2TOOLS_TCTI="$HQ_TPM_TCTI"
+          for i in $(seq 50); do tpm2_getcap handles-persistent >/dev/null 2>&1 && break; sleep 0.1; done
+          echo '{}' | node helpers/tpm2-signer.mjs create > "$state/hq-key.json"
+          echo '{}' | node helpers/tpm2-signer.mjs --handle 0x81010021 create > /dev/null
+          for run in 1 2; do node --test --test-concurrency=1 tests/tpm2-signer.test.mjs; done
+          echo '{}' | node helpers/tpm2-signer.mjs status > "$state/hq-key-after.json"
+          node -e 'const k = (f) => JSON.stringify(JSON.parse(require("node:fs").readFileSync(f, "utf8")).jwk); if (!k(process.argv[1]) || k(process.argv[1]) !== k(process.argv[2])) { console.error("the key at the default handle changed"); process.exit(1); }' "$state/hq-key.json" "$state/hq-key-after.json"
+          left="$(tpm2_getcap handles-persistent | tr -d ' \n-')"
+          test "$left" = "0x81010020" || { echo "handles left behind: $left"; exit 1; }

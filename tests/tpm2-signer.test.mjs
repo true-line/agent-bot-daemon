@@ -5,12 +5,17 @@
 //
 // The tests skip where swtpm or tpm2-tools is missing. CI sets
 // HQ_REQUIRE_TPM=1, which turns that skip into a failure.
+// HQ_TPM_TCTI (for example device:/dev/tpmrm0) runs the same tests against a
+// TPM that already exists instead of spawning swtpm: a real or virtual TPM on
+// a host, run there by hand, or the persistent swtpm CI starts for this mode.
+// That TPM keeps its state, so the tests evict their own handles before and
+// after, and never use the helper's default handle.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
 import { derToP1363 } from '../helpers/tpm2-signer.mjs';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -20,11 +25,27 @@ import { startHQ, tempHome } from './hq-harness.mjs';
 
 const HELPER = join(dirname(fileURLToPath(import.meta.url)), '../helpers/tpm2-signer.mjs');
 const has = (cmd) => spawnSync('sh', ['-c', `command -v ${cmd}`], { stdio: 'ignore' }).status === 0;
-const available = process.platform === 'linux' && has('swtpm') && has('tpm2_sign') && has('tpm2_createprimary');
+const tcti = process.env.HQ_TPM_TCTI || '';
+const device = tcti.startsWith('device:') ? tcti.slice('device:'.length) : '';
+const tools = has('tpm2_sign') && has('tpm2_createprimary');
+const available = process.platform === 'linux' && tools && (tcti ? !device || existsSync(device) : has('swtpm'));
 const required = process.env.HQ_REQUIRE_TPM === '1';
-const skip = available ? false : 'swtpm and tpm2-tools are not installed';
+const missing = tcti ? `tpm2-tools${device ? ` or ${device}` : ''} is missing` : 'swtpm and tpm2-tools are not installed';
+const skip = available ? false : missing;
 const PORT = 23210 + (process.pid % 500) * 2;
-const env = { ...process.env, TPM2TOOLS_TCTI: `swtpm:host=127.0.0.1,port=${PORT}` };
+const env = { ...process.env, TPM2TOOLS_TCTI: tcti || `swtpm:host=127.0.0.1,port=${PORT}` };
+// Every persistent handle these tests create; cleared on a persistent TPM.
+// None is the helper's default (0x81010020), which HQ itself uses on a real host.
+const TEST_HANDLES = ['0x8101002e', '0x8101002f', '0x81010021', '0x81010022', '0x81010023'];
+const evictTestHandles = () => {
+  const listed = spawnSync('tpm2_getcap', ['handles-persistent'], { env, encoding: 'utf8' });
+  if (listed.status !== 0) throw new Error(`tpm2_getcap failed: ${listed.stderr.trim()}`);
+  const present = listed.stdout.toLowerCase().split(/\s+/);
+  for (const h of TEST_HANDLES.filter((x) => present.includes(x))) {
+    const r = spawnSync('tpm2_evictcontrol', ['-C', 'o', '-c', h], { env, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`could not evict test handle ${h}: ${r.stderr.trim()}`);
+  }
+};
 const enrollment = { source: 'test', deviceStatus: async () => 'enrolled', enroll: () => ({}) };
 const command = (handle) => [process.execPath, HELPER, ...(handle ? ['--handle', handle] : [])];
 const backend = (handle) => helperKeyBackend({ command: command(handle), run: helperRunner({ env }) });
@@ -41,12 +62,14 @@ const listening = (port) => new Promise((resolve) => {
 
 before(async () => {
   if (!available) return;
+  if (tcti) { evictTestHandles(); return; }
   state = mkdtempSync(join(tmpdir(), 'hq-swtpm-'));
   swtpm = spawn('swtpm', ['socket', '--tpm2', '--tpmstate', `dir=${state}`, '--server', `type=tcp,port=${PORT}`, '--ctrl', `type=tcp,port=${PORT + 1}`, '--flags', 'not-need-init,startup-clear'], { stdio: 'ignore' });
   for (let i = 0; i < 100 && !(await listening(PORT + 1)); i++) await new Promise((r) => setTimeout(r, 50));
 });
 
 after(() => {
+  if (available && tcti) evictTestHandles();
   swtpm?.kill('SIGTERM');
   if (state) rmSync(state, { recursive: true, force: true });
 });
@@ -66,7 +89,7 @@ test('DER signatures from tpm2-tools convert to r || s, and anything else is ref
 });
 
 test('CI has a software TPM to test against', { skip: !required }, () => {
-  assert.equal(available, true, 'HQ_REQUIRE_TPM=1 but swtpm or tpm2-tools is missing (or this is not Linux)');
+  assert.equal(available, true, `HQ_REQUIRE_TPM=1 but ${tcti ? missing : 'swtpm or tpm2-tools is missing'} (or this is not Linux)`);
 });
 
 // When a helper call fails, say what tpm2-tools said: HQ itself ignores stderr.
@@ -83,7 +106,7 @@ test('TPM helper: creates a key in the TPM, signs with it, and HQ holds no key f
     assert.match(explain('0x8101002f', 'create'), /already exists/);
     const signed = explain('0x8101002f', 'sign', '{"message":"aGVsbG8"}');
     assert.match(signed, /^sign exit 0: \{"protocol":"agent-bot-hq-signer\/1","signature":"[A-Za-z0-9_-]{86}"\}$/, signed);
-    const signer = createSigner({ home, backend: backend(), enrollment });
+    const signer = createSigner({ home, backend: backend('0x8101002e'), enrollment });
     assert.equal(await signer.deviceStatus(), 'enrolled');
     const report = signer.report();
     assert.deepEqual([report.available, report.backend, report.key_storage, report.key_files, report.generation], [true, 'helper', 'hardware', 0, 1]);
@@ -94,7 +117,7 @@ test('TPM helper: creates a key in the TPM, signs with it, and HQ holds no key f
     assert.deepEqual(walk(home).map((f) => f.slice(home.length + 1)), ['signer/pin.json']);
 
     // The key survives a new HQ process: the pin still matches what the TPM holds.
-    assert.equal(createSigner({ home, backend: backend(), enrollment }).report().thumbprint, report.thumbprint);
+    assert.equal(createSigner({ home, backend: backend('0x8101002e'), enrollment }).report().thumbprint, report.thumbprint);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
