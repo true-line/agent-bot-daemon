@@ -29,37 +29,39 @@
 // the owner's `user` account, so any process there, agents that run there
 // included, can read the store and connect to every socket. An agent HQ
 // starts in its harness account (row 16b) is not in `user`. HQ reports
-// managed-cooperative and says why; the skeleton holds no credentials and no
-// grants.
+// managed-cooperative and says why. The identity-service link holds short-lived
+// access tokens in memory; credential-reference resolution is still row 18.
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { createHost } from '../sdk/host.mjs';
 import { fail } from '../sdk/errors.mjs';
-import { createCore, pushReceipt, revokeDevice } from '../sdk/services.mjs';
+import { createCore, dropTokens, pushReceipt, revokeDevice } from '../sdk/services.mjs';
 import { admissionPlugin } from './admission.mjs';
 import { tasksPlugin } from './tasks.mjs';
 import { legacyDaemon, legacySigner } from './legacy.mjs';
 import { detectProfile } from './profile.mjs';
 import { backendFromConfig, createSigner, validateSignerConfig } from './signer.mjs';
 import { createEnrollment, validateEnrollmentConfig } from './enrollment.mjs';
+import { createIdentityService } from './identity-service.mjs';
 import { createLauncher, LAUNCH_OPERATIONS } from './launch.mjs';
 import { loadPlugins } from './plugins.mjs';
 import { checkSocketPath, listenSocket } from './socket.mjs';
 import { checkHarnessSocket, planHarnessEndpoints, validateHarnessesConfig } from './harness-accounts.mjs';
 import { coreTable, CORE_PLUGIN, ensurePrivateDir, openStore } from './store.mjs';
+import { validateNoticesConfig } from './notices-config.mjs';
 
 export const HQ_VERSION = '0.1.0';
-const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'concurrentWriters', 'legacy', 'signer', 'features', 'enrollment', 'harnesses']);
+const CONFIG_KEYS = new Set(['standalone', 'leaseTtlMs', 'acceptedDefinitions', 'concurrentWriters', 'legacy', 'signer', 'features', 'enrollment', 'harnesses', 'notices']);
 const FEATURE_KEYS = new Set(['hardwareSigner']);
 const LEGACY_KEYS = new Set(['supervise', 'probeIntervalMs']);
 const DEFAULT_PROBE_MS = 30_000;
 
 export const cryptoRandom = () => ({ bytes: (n) => randomBytes(n), hex: (n = 16) => randomBytes(n).toString('hex') });
 
-// No identity-service link yet: it arrives hardened from agent-bot-identity
-// (§9 PR 10) and HQ resolves credential references in PR 18. Until then every
+// Legacy enrollment cannot use HQ's own signer for the identity-service link.
+// HQ resolves credential references in PR 18. Until then every
 // credential waits with credential_unavailable, as an outage would (R9).
 export function unlinkedIdentity() {
   const refuse = () => fail('credential_unavailable', 'HQ has no identity-service link yet (§9 PRs 10 and 18)');
@@ -106,6 +108,7 @@ export function validateConfig(c) {
     }
   }
   if (c.enrollment !== undefined) validateEnrollmentConfig(c.enrollment);
+  if (c.notices !== undefined) validateNoticesConfig(c.notices);
   if (c.harnesses !== undefined) validateHarnessesConfig(c.harnesses);
   if (c.signer !== undefined) {
     validateSignerConfig(c.signer);
@@ -129,6 +132,7 @@ export function createHQ({
   signer,                        // defaults to the HQ signer on the config's key backend (hq/signer.mjs)
   enrollment,                    // where device status and enrollment come from: the config's source by
                                  // default (legacy bridge, or hq/enrollment.mjs); may be a function of the signer
+  identity,                      // identity-service transport; tests inject a canned signed service
   legacy,                        // defaults to legacyDaemon with the config's supervise flag
   clock = { now: () => Date.now() },
   random = cryptoRandom(),
@@ -230,13 +234,20 @@ export function createHQ({
     core = createCore({
       clock, random, signer,
       profile: profileInfo.profile,
-      identity: unlinkedIdentity(),
+      identity: identity ?? (cfg.enrollment?.source === 'hq'
+        ? createIdentityService({ server: cfg.enrollment.server ?? 'https://agents.true-line.ai', enrollment: signer.enrollment, clock })
+        : unlinkedIdentity()),
       persist: () => store.persist(),
       config: {
         'hq-admission': { acceptedDefinitions: cfg.acceptedDefinitions ?? {}, ...(cfg.leaseTtlMs ? { leaseTtlMs: cfg.leaseTtlMs } : {}) },
         'hq-tasks': { concurrentWriters: cfg.concurrentWriters ?? [] },
+        'agent-comms': { notices: cfg.notices ?? null },
       },
     });
+    // Revocation can also arrive from the signer/legacy probe, rather than
+    // an identity reply. Drop the transport's access token and pending work
+    // on either path, alongside the SDK's resolved-credential cache.
+    core.onDeviceRevoked.push(() => core.identity.close?.());
     store.load(core);
     launcher = createLauncher({
       ...launch,
@@ -322,6 +333,7 @@ export function createHQ({
           ...(signerReport() ? { signer: signerReport() } : {}),
           features: { hardwareSigner: cfg.features?.hardwareSigner === true },
           ...(signer.enrollmentProgress?.() ? { enrollment: signer.enrollmentProgress() } : {}),
+          ...(core.identity.status ? { identityService: core.identity.status() } : {}),
           ...(devPlugins ? { devPlugins } : {}),
         },
         legacy: legacyRunner.report(),
@@ -383,6 +395,11 @@ export function createHQ({
     if (!running) return [];
     running = false;
     clearInterval(timer);
+    // Close the transport before awaiting the legacy probe, launch shutdown
+    // or plugin callbacks. A retained context and late reply cannot extend
+    // credentials while one of those callbacks is blocked.
+    core.identity.close?.();
+    dropTokens(core);
     await firstTick;
     // Agents first, while their connections are still open: each launch's
     // process group is stopped (hq/launch.mjs).

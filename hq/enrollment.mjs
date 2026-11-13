@@ -30,10 +30,10 @@
 // signer key, so HQ is unenrolled (safe mode at its next start) until the
 // owner approves.
 //
-// Not here: the access token, DPoP and signed responses (the hardened link,
-// §9 PR 10) and credential resolution (PR 18). `assertion()` builds the
-// jwt-bearer assertion those will send. The server key is pinned on first
-// use, as the legacy client does; release-pinned keys arrive with the link.
+// Access tokens, DPoP and authenticated replies belong to identity-service.mjs
+// (§9 row 10); credential resolution is row 18. `assertion()` builds the
+// assertion the link sends. This enrollment record retains its transitional
+// first-use server key; the link trusts only its separate release pin.
 import { randomBytes } from 'node:crypto';
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
