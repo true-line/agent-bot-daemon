@@ -244,6 +244,10 @@ export function createHQ({
         'agent-comms': { notices: cfg.notices ?? null },
       },
     });
+    // Revocation can also arrive from the signer/legacy probe, rather than
+    // an identity reply. Drop the transport's access token and pending work
+    // on either path, alongside the SDK's resolved-credential cache.
+    core.onDeviceRevoked.push(() => core.identity.close?.());
     store.load(core);
     launcher = createLauncher({
       ...launch,

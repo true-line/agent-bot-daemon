@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from 'node:crypto';
 import { createIdentityService, signatureBytes, validateServerKeys } from '../hq/identity-service.mjs';
 import { testClock } from '../sdk/services.mjs';
+import { startHQ } from './hq-harness.mjs';
 
 const SERVER = 'https://identity.example.test';
 const before = '2026-01-01T00:00:00Z', after = '2027-01-01T00:00:00Z';
@@ -249,4 +250,25 @@ test('closing during a shared refresh cannot cache a late access token', async (
   await rejected;
   assert.equal(client.status().tokenCached, false);
   assert.equal(f.state.apiCalls, 0);
+});
+
+
+test('HQ signer revocation drops the transport token and refuses an in-flight late reply', async () => {
+  const f = fixture(), client = f.make();
+  await client.call('GET', '/api/daemon/whoami');
+  assert.equal(client.status().tokenCached, true);
+  const hq = await startHQ({ identity: client });
+  let release;
+  f.state.hold = new Promise((r) => { release = r; });
+  const pending = client.call('GET', '/api/daemon/whoami');
+  const refused = assert.rejects(pending, code('host.context_revoked'));
+  try {
+    while (f.state.apiCalls < 2) await new Promise((r) => setTimeout(r, 1));
+    hq.legacy.state.device = 'revoked';
+    await hq.hq.legacyTick();
+    assert.equal(hq.hq.status().mode, 'device_revoked');
+    assert.equal(client.status().tokenCached, false);
+    release();
+    await refused;
+  } finally { release(); await hq.done(); }
 });
