@@ -26,11 +26,39 @@ node hq/main.mjs souls    # admitted Souls and their runtimes
 | Profile reporting: the profile in force, with the reasons a stronger one is not. Never `managed-protected` before §9 PR 16. | `profile.mjs` | §3.3, R8 |
 | Task service ([§9 PR 13](../docs/daemon-plugin-split.md#stage-1-local-vertical-slice-wp2wp4), #40): `task/v1` records in the store, the `task-v1` provider (platform PDR-0024). Members commit through `task.commit` with their runtime, over the admission connection or brokered with their bound runtime; only the task Soul's current lead at the current epoch and lease commits, and a specialist's request is recorded as a proposal (T20). CAS on the expected revision (`revision_conflict`), one commit per operation ID with the stored receipt for an exact repeat (T05), write-scope exclusion (`write_scope_conflict`, unless listed in `concurrentWriters`), and offers whose requester is their authenticated source (T04). The owner offers a task with `tasks.offer` and reads `tasks.list` and `tasks.get`. A bound member reads its Soul's waiting directives with the `task.directives` kind, each a wire/v1 directive-or-query record for a task the owner or HQ offered, and one of its Soul's tasks with `task.get`. A peer's offer is never a directive. | `tasks.mjs` | §4.2, 0.4 §7 |
 | hq/v1 Hello (with the admission result), Admit, Equip, Ready and Lease, checked against the pinned schemas in both directions. Versions are N/N−1 (T14). The owner's config holds the accepted definitions, there is one current installation epoch per Soul (T15), and leases have generations and renewal sequences. Runtimes are bound to the admitting connection. | `admission.mjs` | §4.2, 0.4 §5 |
-| Bootstrap per §4.4 through the SDK host. Device status comes from the legacy enrollment, so an unenrolled device or an unreadable signer is safe mode, and a revoked device is `device_revoked`. With no identity-service link yet, credentials refuse with `credential_unavailable`. | `hq.mjs`, `legacy.mjs` | §4.4, §4.7 |
+| Bootstrap per §4.4 through the SDK host. Device status comes from the legacy enrollment, so an unenrolled device or an unreadable signer is safe mode, and a revoked device is `device_revoked`. With legacy enrollment, credentials refuse with `credential_unavailable`. HQ enrollment selects the hardened link below; credential-reference resolution still waits for row 18. | `hq.mjs`, `legacy.mjs` | §4.4, §4.7 |
 | Installed plugins: one directory per plugin, with `plugin.json` (static fields) and `plugin.mjs`. Before any plugin code runs, the tree's sha256-manifest-v1 digest must match its pin in [`governance/plugins.json`](../governance/plugins.json), and the set must resolve from `plugin.json` alone. The code's `definePlugin` fields must then equal `plugin.json`. Symlinks are refused. A refused plugin gets a `hq.plugin.refused` receipt and a reason in status, and its dependents are refused with it. `--dev-plugins` skips the pin and status always names it. Core names (`hq`, `hq-admission`, `hq-tasks`) cannot be taken. | `plugins.mjs` | §4.1, §4.5 |
 | The HQ signer ([§9 row 15a](../docs/daemon-plugin-split.md#stage-2a-member-isolation-wp2)): one pinned P-256 key, used only through `sign`. Approval records carry its ES256 signature. The `software` backend keeps a key file in `signer/` (transition custody, `key_storage=software`); the `helper` backend runs an external helper that holds a hardware key and HQ keeps no key file (`key_storage=hardware`). HQ pins the public key's thumbprint, verifies every signature against it, and treats a missing or changed key as an unavailable signer, which is safe mode. `status` names the backend and custody, and a software key is a stated reason the profile is not `managed-protected`. `signer rekey` replaces the key while HQ is stopped. | `signer.mjs` | §3.2, §4.4 |
-| HQ's own enrollment ([§9 row 15c](../docs/daemon-plugin-split.md#stage-2a-member-isolation-wp2)), when `enrollment.source` is `hq`: the identity service's device-code grant with the proof signed by the signer's key, so the device record names that key and its `key_storage`. `device.enroll` returns the code to approve and HQ polls in the background; `device.status` and `status` show pending, approved or failed, and the outcome is a receipt. Re-enrollment makes a fresh key first, and a revoked record is never reused. It also builds the jwt-bearer assertion the identity-service link will send. | `enrollment.mjs` | §4.4, §4.7 |
+| HQ's own enrollment ([§9 row 15c](../docs/daemon-plugin-split.md#stage-2a-member-isolation-wp2)), when `enrollment.source` is `hq`: the identity service's device-code grant with the proof signed by the signer's key, so the device record names that key and its `key_storage`. `device.enroll` returns the code to approve and HQ polls in the background; `device.status` and `status` show pending, approved or failed, and the outcome is a receipt. Re-enrollment makes a fresh key first, and a revoked record is never reused. It also builds the jwt-bearer assertion the identity-service link sends. | `enrollment.mjs` | §4.4, §4.7 |
 | The existing daemon is probed and reported. It is started only when `legacy.supervise` is on, and never stopped. | `legacy.mjs` | §8.2 |
+
+## Identity-service link (row 10)
+
+With `enrollment.source: "hq"`, `identity-service.mjs` uses the enrollment's
+signer assertion to request a DPoP-bound access token. The token and its fresh
+P-256 key stay in memory. Every request refuses redirects, bounds the entire
+response read, and checks the response's signature, key ID and request nonce
+before parsing JSON, including error replies. The same checks apply to the
+JWT-bearer token reply, using the assertion's nonce. Stop and verified device
+revocation discard credentials; an in-flight reply cannot restore them. A
+401 invalidates its token without replaying the operation.
+
+[`governance/server-keys.json`](../governance/server-keys.json) is a release
+pin, separate from enrollment's transitional `identity/server-key.json`.
+The transport never learns trust from the network. Each public key has one
+`kid`, `x`, RFC3339 `notBefore` and `notAfter`, and `status` (`active`, `next`
+or `retired`). A pre-published next key is usable only inside its interval;
+retired, unknown and out-of-window keys refuse. Deploying rotation requires
+the reviewed release pin first.
+
+**Production activation is blocked.** The release pin currently has no keys.
+The service's public well-known response observed on 2026-11-13 has a key ID
+and public key but no operator-approved validity interval or rotation status.
+Those fields must be supplied and reviewed before the release pin is filled;
+no dates are invented. Until then identity operations return
+`credential_unavailable` and local work continues. Status reports the link,
+key count and whether a token is cached, never credentials. The legacy default
+is unchanged. Credential-reference resolution is still row 18.
 
 ## State directory
 
@@ -56,6 +84,14 @@ its CLI. `hq` is HQ's own enrollment with the identity service at
 `enrollment.server`, on the signer's key: `node hq/main.mjs enroll --harness
 NAME` starts the device-code grant, prints the code to approve, and waits.
 HQ is enrolled from its next start. `--force` re-enrolls with a fresh key.
+
+`notices` opts the agent-comms broker plugin into explicit identity-service
+queues, for example `{ "harnesses": ["example-codex-agent"] }`. HQ validates
+the queue list, count, poll/lease intervals, storage caps, retention and wake
+class (`none` or `notify`), then passes the section to that plugin. Without
+the section, ingestion is disabled. The broker owns the custody and recovery
+behavior; see [agent-bot-comms's notice ingestion](https://github.com/true-line/agent-bot-comms/blob/main/docs/hq-notices.md)
+and [HQ issue #123](https://github.com/true-line/agent-bot-hq/issues/123).
 
 `features` holds feature flags, all off by default. `hardwareSigner` gates
 the `helper` signer backend: with it off, HQ refuses a config that names a
@@ -151,11 +187,12 @@ peer-credential check and a service unit, is #88.
   enrolled with the real identity service on a software key: the service
   accepted the signed proof, the owner approved the code, and HQ came up
   enrolled after a restart. That device has not been used for anything
-  since, because HQ cannot ask for an access token yet (the link, PRs 10
-  and 18), so `enrollment.source` stays `legacy`. Unlike the legacy
+  since. The row 10 transport can ask for access tokens, but production use
+  waits for reviewed release key metadata, so `enrollment.source` stays
+  `legacy`. Unlike the legacy
   client, a forced re-enrollment does not keep the old enrollment alive
   while the new grant is pending.
-- The identity-service link (PRs 10 and 18), grants and credential references in Equip (PRs 18 and 21), and
+- Production release signing-key metadata (row 10), credential resolution (row 18), grants and credential references in Equip (PRs 18 and 21), and
   `accept-revision` (PR 21).
 - The HQ account, the peer-credential check and the service unit (#88,
   after agent-bot-machine S6), and the Windows named pipe (#89).
