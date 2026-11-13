@@ -1,4 +1,12 @@
 {
   "server": "https://agents.true-line.ai",
-  "keys": []
+  "keys": [
+    {
+      "kid": "KAqTzL7HfHmOiSbT",
+      "x": "oKCLeM0zJbg3tLree_mEfEVEUmUzPArx1PMUWis-D-0",
+      "notBefore": "2026-11-17T00:00:00Z",
+      "notAfter": "2027-02-15T00:00:00Z",
+      "status": "active"
+    }
+  ]
 }
