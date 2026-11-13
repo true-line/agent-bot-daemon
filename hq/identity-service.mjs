@@ -78,6 +78,8 @@ export function createIdentityService({
   let epoch = 0;
   let closed = false;
   let revoked = false;
+  let revocationListenerFailed = false;
+  let revocationPersistenceFailed = false;
   let link = 'not-checked';
   const listeners = new Set();
   const requests = new Set();
@@ -93,17 +95,29 @@ export function createIdentityService({
     if (revoked) return;
     revoked = true;
     drop();
-    enrollment.markRevoked?.('device_revoked');
-    for (const listener of listeners) listener();
+    // Revocation is effective in memory even if an observer or the local
+    // enrollment store fails. Every listener gets its own attempt, before
+    // persistence, so a disk error cannot leave HQ's SDK credentials live.
+    const attempt = (fn, failed) => {
+      try { Promise.resolve(fn()).catch(failed); } catch { failed(); }
+    };
+    for (const listener of listeners) attempt(listener, () => { revocationListenerFailed = true; });
+    attempt(() => enrollment.markRevoked?.('device_revoked'), () => { revocationPersistenceFailed = true; });
   };
   const alive = (generation) => {
     check();
     if (epoch !== generation) fail('host.context_revoked', 'identity credentials were dropped while the request was in flight');
   };
+  const freshAccess = (current) => {
+    if (current.expiresAt <= clock.now()) {
+      if (token === current) token = undefined;
+      unavailable('access token expired before the daemon request');
+    }
+  };
 
   // Includes reading the response body in the deadline. A fetch that resolves
   // its headers but never ends its body must not hold a credential operation.
-  async function request(path, init, jti) {
+  async function request(path, init, jti, accessToken) {
     check();
     const started = clock.now();
     const generation = epoch;
@@ -115,6 +129,7 @@ export function createIdentityService({
     });
     try {
       const work = (async () => {
+        if (accessToken) freshAccess(accessToken);
         const response = await fetchImpl(`${server}${path}`, { ...init, redirect: 'error', signal: controller.signal });
         if (response.status >= 300 && response.status < 400) unavailable('redirect refused');
         const declared = response.headers.get('content-length');
@@ -178,6 +193,7 @@ export function createIdentityService({
     const state = await enrollment.deviceStatus();
     if (state === 'revoked') { revoke(); fail('device_revoked', 'device revoked: re-enroll'); }
     if (state !== 'enrolled') unavailable('HQ is not enrolled');
+    if (token && token.expiresAt <= clock.now()) token = undefined;
     if (token && token.expiresAt > clock.now() + 60_000) return token;
     if (refreshing) return refreshing;
     const generation = epoch;
@@ -198,7 +214,11 @@ export function createIdentityService({
       if (out.status >= 500) unavailable('access token service is temporarily unavailable', true);
       if (out.status !== 200 || result?.token_type !== 'DPoP' || typeof result.access_token !== 'string' || !result.access_token
         || !Number.isSafeInteger(result.expires_in) || result.expires_in <= 0 || result.expires_in > 900) unavailable('access token was refused or malformed');
-      token = { value: result.access_token, expiresAt: started + result.expires_in * 1000, privateKey, publicJwk: ephemeralJwk, harnesses: Array.isArray(result.harnesses) ? result.harnesses.filter((h) => typeof h === 'string') : [] };
+      const candidate = { value: result.access_token, expiresAt: started + result.expires_in * 1000, privateKey, publicJwk: ephemeralJwk, harnesses: Array.isArray(result.harnesses) ? result.harnesses.filter((h) => typeof h === 'string') : [] };
+      // expires_in is measured conservatively from the request's start.
+      // A slow but authenticated response must not cache an expired token.
+      freshAccess(candidate);
+      token = candidate;
       return token;
     })().catch((e) => {
       // Share the fallback with every concurrent waiter, as well as the
@@ -215,7 +235,7 @@ export function createIdentityService({
     get link() { return link; },
     check,
     onRevoke(listener) { listeners.add(listener); },
-    status: () => ({ link, revoked, releasePinned: true, trustedKeys: keySet.length, tokenCached: Boolean(token) }),
+    status: () => ({ link, revoked, releasePinned: true, trustedKeys: keySet.length, tokenCached: Boolean(token), revocationListenerFailed, revocationPersistenceFailed }),
     async call(method, path, body) {
       check();
       if (typeof method !== 'string' || !/^(GET|POST|PUT|PATCH|DELETE)$/.test(method)
@@ -223,6 +243,7 @@ export function createIdentityService({
       const current = await access();
       const generation = epoch;
       alive(generation);
+      freshAccess(current);
       // Notices are scoped twice: the owner selects queues, and HQ refuses
       // a queue outside this enrolled device's current scope before sending.
       if (body?.harness !== undefined && !current.harnesses.includes(body.harness)) fail('host.route_not_allowed', 'the harness is outside this device enrollment');
@@ -231,7 +252,7 @@ export function createIdentityService({
       const payload = Buffer.from(JSON.stringify({ htm: method, htu: `${server}${path}`, iat: Math.floor(clock.now() / 1000), jti, ath: hash(current.value).toString('base64url') })).toString('base64url');
       const unsigned = `${header}.${payload}`;
       const proof = `${unsigned}.${sign('sha256', Buffer.from(unsigned), { key: current.privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64url')}`;
-      const reply = await request(path, { method, headers: { accept: 'application/json', authorization: `DPoP ${current.value}`, DPoP: proof, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }, jti);
+      const reply = await request(path, { method, headers: { accept: 'application/json', authorization: `DPoP ${current.value}`, DPoP: proof, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }, jti, current);
       alive(generation);
       if (reply.status === 401) drop(); // Never replay an external write automatically.
       return reply;

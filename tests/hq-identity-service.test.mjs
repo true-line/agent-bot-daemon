@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from 'node:crypto';
 import { createIdentityService, signatureBytes, validateServerKeys } from '../hq/identity-service.mjs';
 import { testClock } from '../sdk/services.mjs';
+import { definePlugin } from '../sdk/plugin.mjs';
 import { startHQ } from './hq-harness.mjs';
 
 const SERVER = 'https://identity.example.test';
@@ -17,7 +18,7 @@ function fixture() {
   const responseKey = generateKeyPairSync('ed25519');
   const keySet = [{ kid: 'release-key-1', x: responseKey.publicKey.export({ format: 'jwk' }).x, notBefore: before, notAfter: after, status: 'active' }];
   let count = 0;
-  const state = { requests: [], tokens: 0, apiCalls: 0, revocations: 0, device: 'enrolled', mode: 'ok', mutate: (r) => r };
+  const state = { requests: [], tokens: 0, apiCalls: 0, revocations: 0, device: 'enrolled', mode: 'ok', expiresIn: 900, mutate: (r) => r };
   const enrollment = {
     deviceStatus: async () => state.device,
     markRevoked() { state.device = 'revoked'; state.revocations++; },
@@ -52,7 +53,7 @@ function fixture() {
       assert.equal('d' in claims.cnf.jwk, false);
       const accessToken = `access-secret-canary-${state.tokens}`;
       tokenKeys.set(accessToken, claims.cnf.jwk);
-      out = signed(state.mode === 'token-revoked' || state.mode === 'software-refused' ? 400 : 200, state.mode === 'software-refused' ? { error: 'profile_insufficient', error_description: 'SECRET_CANARY' } : state.mode === 'token-revoked' ? { error: 'invalid_grant', error_description: 'SECRET_CANARY' } : { access_token: accessToken, token_type: 'DPoP', expires_in: 900, harnesses: ['codex'] }, claims.jti);
+      out = signed(state.mode === 'token-revoked' || state.mode === 'software-refused' ? 400 : 200, state.mode === 'software-refused' ? { error: 'profile_insufficient', error_description: 'SECRET_CANARY' } : state.mode === 'token-revoked' ? { error: 'invalid_grant', error_description: 'SECRET_CANARY' } : { access_token: accessToken, token_type: 'DPoP', expires_in: state.expiresIn, harnesses: ['codex'] }, claims.jti);
     } else {
       state.apiCalls++;
       const token = init.headers.authorization.slice('DPoP '.length);
@@ -271,4 +272,106 @@ test('HQ signer revocation drops the transport token and refuses an in-flight la
     release();
     await refused;
   } finally { release(); await hq.done(); }
+});
+
+test('revocation reaches every listener and HQ drops SDK credentials even when enrollment persistence throws', async () => {
+  const f = fixture();
+  f.enrollment.markRevoked = () => { throw new Error('PERSISTENCE_SECRET_CANARY'); };
+  const client = f.make();
+  client.onRevoke(() => { throw new Error('OBSERVER_SECRET_CANARY'); });
+  const probe = definePlugin({
+    name: 'revocation-probe', version: '1.0.0', hostApi: 1, services: ['credentials'],
+    async init(ctx) { return { provides: { resolve: () => ctx.services.credentials.resolve('test-reference', { task: 'test-task', operation: 'test-operation' }) } }; },
+  });
+  const hq = await startHQ({ plugins: [probe], identity: { ...client, mint: async () => ({ token: 'SDK_CREDENTIAL_CANARY', expiresAt: f.clock.now() + 60_000 }) } });
+  let lastNotified = 0;
+  client.onRevoke(() => { lastNotified += 1; });
+  try {
+    await hq.hq.host.provided('revocation-probe').resolve();
+    await client.call('GET', '/api/daemon/whoami');
+    assert.equal(hq.hq.core.tokens.size, 1);
+    assert.equal(client.status().tokenCached, true);
+    f.state.mode = 'api-revoked';
+    await assert.rejects(client.call('GET', '/api/daemon/whoami'), code('device_revoked'));
+    assert.equal(lastNotified, 1, 'a failing observer does not skip later observers');
+    assert.equal(hq.hq.status().mode, 'device_revoked');
+    assert.equal(hq.hq.core.tokens.size, 0);
+    assert.equal(hq.hq.core.minting.size, 0);
+    assert.equal(client.status().tokenCached, false);
+    assert.equal(client.status().revocationPersistenceFailed, true);
+    assert.equal(client.status().revocationListenerFailed, true);
+    assert.doesNotMatch(JSON.stringify(client.status()), /SECRET_CANARY/);
+    await assert.rejects(hq.hq.host.provided('revocation-probe').resolve(), code('device_revoked'));
+  } finally { await hq.done(); }
+});
+
+for (const phase of ['access refresh', 'daemon API']) test(`HQ shutdown closes the identity transport before a blocked plugin stop (${phase})`, async () => {
+  const f = fixture();
+  let releaseReply, arrived, releaseStop, stopping;
+  const replyHeld = new Promise((r) => { releaseReply = r; });
+  const replyArrived = new Promise((r) => { arrived = r; });
+  const stopHeld = new Promise((r) => { releaseStop = r; });
+  const stopStarted = new Promise((r) => { stopping = r; });
+  let hold = false;
+  const client = f.make({ fetchImpl: async (url, init) => {
+    const response = await f.fetchImpl(url, init);
+    if (hold && (phase === 'access refresh') === url.endsWith('/oauth/token')) { arrived(); await replyHeld; }
+    return response;
+  } });
+  const probe = definePlugin({
+    name: 'shutdown-probe', version: '1.0.0', hostApi: 1,
+    services: ['identityService'], identityServiceRoutes: ['/api/daemon/whoami'],
+    async init(ctx) { return { provides: { call: () => ctx.services.identityService.call('GET', '/api/daemon/whoami') } }; },
+    async stop() { stopping(); await stopHeld; },
+  });
+  const hq = await startHQ({ identity: client, plugins: [probe] });
+  let shutdown;
+  try {
+    if (phase === 'daemon API') await client.call('GET', '/api/daemon/whoami');
+    hold = true;
+    const pending = hq.hq.host.provided('shutdown-probe').call();
+    const rejected = assert.rejects(pending, code('host.context_revoked'));
+    await replyArrived;
+    hq.hq.core.tokens.set('shutdown-test', { token: 'SDK_SHUTDOWN_CANARY', expiresAt: f.clock.now() + 60_000 });
+    shutdown = hq.hq.stop();
+    await stopStarted;
+    assert.equal(hq.hq.status().mode, 'stopping');
+    assert.equal(hq.hq.core.tokens.size, 0, 'SDK credentials are dropped before blocked stop callbacks');
+    assert.equal(client.status().tokenCached, false);
+    assert.equal(f.state.requests.at(-1).init.signal.aborted, true);
+    await assert.rejects(hq.hq.host.provided('shutdown-probe').call(), code('host.context_revoked'));
+    releaseReply();
+    await rejected;
+    assert.equal(client.status().tokenCached, false);
+    assert.equal(f.state.apiCalls, phase === 'access refresh' ? 0 : 2, 'shutdown starts no new API request');
+    releaseStop();
+    await shutdown;
+  } finally { releaseReply(); releaseStop(); await shutdown?.catch(() => {}); await hq.done(); }
+});
+
+test('an authenticated access token already expired on arrival is neither cached nor sent to the daemon API', async () => {
+  const f = fixture();
+  f.state.expiresIn = 1;
+  const client = f.make({ fetchImpl: async (url, init) => {
+    const reply = await f.fetchImpl(url, init);
+    if (url.endsWith('/oauth/token')) f.clock.advance(2000);
+    return reply;
+  } });
+  try {
+    await assert.rejects(client.call('GET', '/api/daemon/whoami'), (e) => e.code === 'credential_unavailable' && /expired/.test(e.message));
+    assert.equal(f.state.apiCalls, 0);
+    assert.equal(client.status().tokenCached, false);
+  } finally { client.close(); }
+});
+
+test('a token that expires between access acquisition and daemon fetch is refused before sending', async () => {
+  const f = fixture(), client = f.make();
+  f.state.expiresIn = 1;
+  let advanced = false;
+  const body = { get harness() { if (!advanced) { advanced = true; f.clock.advance(2000); } return 'codex'; } };
+  try {
+    await assert.rejects(client.call('POST', '/api/daemon/notices/take', body), (e) => e.code === 'credential_unavailable' && /expired/.test(e.message));
+    assert.equal(f.state.apiCalls, 0);
+    assert.equal(client.status().tokenCached, false);
+  } finally { client.close(); }
 });

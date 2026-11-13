@@ -37,7 +37,7 @@ import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { createHost } from '../sdk/host.mjs';
 import { fail } from '../sdk/errors.mjs';
-import { createCore, pushReceipt, revokeDevice } from '../sdk/services.mjs';
+import { createCore, dropTokens, pushReceipt, revokeDevice } from '../sdk/services.mjs';
 import { admissionPlugin } from './admission.mjs';
 import { tasksPlugin } from './tasks.mjs';
 import { legacyDaemon, legacySigner } from './legacy.mjs';
@@ -395,6 +395,11 @@ export function createHQ({
     if (!running) return [];
     running = false;
     clearInterval(timer);
+    // Close the transport before awaiting the legacy probe, launch shutdown
+    // or plugin callbacks. A retained context and late reply cannot extend
+    // credentials while one of those callbacks is blocked.
+    core.identity.close?.();
+    dropTokens(core);
     await firstTick;
     // Agents first, while their connections are still open: each launch's
     // process group is stopped (hq/launch.mjs).
@@ -402,7 +407,6 @@ export function createHQ({
     for (const s of sockets) await s.close();
     sockets = [];
     const report = await host.stop({ reason });
-    core.identity.close?.();
     for (const [id, s] of coreTable(core, 'sessions')) if (!s.closed_at) coreTable(core, 'sessions').set(id, { ...s, closed_at: clock.now() });
     await pushReceipt(core, { plugin: 'hq', kind: 'hq.stopped', reason });
     return report;
