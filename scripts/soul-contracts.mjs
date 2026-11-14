@@ -12,7 +12,7 @@
 // the digest is the SHA-256 of the manifest's RFC 8785 (JCS) bytes.
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -106,8 +106,47 @@ function materialize(dir, entries) {
   writeFileSync(join(dir, '.verified'), '');
 }
 
+// Interim release entrypoint requires a public contracts tree. Verify every
+// file before use; never fall back to the network for an interim release.
+export function verifyVendored(dir, pin = readPin()) {
+  const root = resolve(dir);
+  for (let path = root; ; path = dirname(path)) {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('vendored contracts ancestry must be directories without symlinks');
+    if (dirname(path) === path) break;
+  }
+  if (JSON.stringify(readdirSync(root).sort()) !== JSON.stringify([...pin.paths].sort())) throw new Error('vendored contracts root entries differ from the pin');
+  const entries = [];
+  let total = 0;
+  const maxFile = 8 * 1024 * 1024, maxTotal = 32 * 1024 * 1024;
+  function visit(relative) {
+    const path = join(root, relative);
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink()) throw new Error(`vendored contracts contain a symlink: ${relative}`);
+    if (stat.isDirectory()) {
+      for (const name of readdirSync(path).sort()) visit(`${relative}/${name}`);
+    } else if (stat.isFile()) {
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const opened = fstatSync(fd);
+        if (!opened.isFile() || opened.size > maxFile || (total += opened.size) > maxTotal) throw new Error(`vendored contracts exceed size limit: ${relative}`);
+        const bytes = Buffer.alloc(opened.size);
+        let offset = 0;
+        while (offset < bytes.length) { const n = readSync(fd, bytes, offset, bytes.length - offset, null); if (!n) throw new Error(`vendored contracts changed while reading: ${relative}`); offset += n; }
+        if (readSync(fd, Buffer.alloc(1), 0, 1, null)) throw new Error(`vendored contracts changed while reading: ${relative}`);
+        entries.push({ path: relative, mode: (opened.mode & 0o111) ? '100755' : '100644', bytes });
+      } finally { closeSync(fd); }
+    } else throw new Error(`vendored contracts contain a non-regular file: ${relative}`);
+  }
+  for (const path of pin.paths) visit(path);
+  const got = manifestDigest(entries);
+  if (got.digest !== pin.digest || got.files !== pin.files) throw new Error(`vendored soul-contracts digest ${got.digest} (${got.files} files) does not match the pin ${pin.digest} (${pin.files} files)`);
+  return { dir: root, ...got };
+}
+
 // Fetch and verify the pinned release; return the directory tests load from.
 export function verify(pin = readPin()) {
+  if (process.env.HQ_INTERIM_OFFLINE === '1') return verifyVendored(join(ROOT, 'vendor/soul-contracts'), pin);
   const { repo, commit } = fetchTag(pin.repository, pin.tag);
   if (commit !== pin.commit) throw new Error(`tag ${pin.tag} now points at ${commit}, not the pinned ${pin.commit}; refusing a moved tag`);
   const entries = treeEntries(repo, commit, pin.paths);
